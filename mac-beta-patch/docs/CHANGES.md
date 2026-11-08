@@ -74,6 +74,10 @@
 axsearch / axconfirm，见其 README）：不抢焦点，可在用户使用其他窗口时
 驱动和检查 App UI；需要给终端授予「辅助功能」权限。
 
+2026-11-09 收尾清理：移除排查期的临时脚手架——`/tmp` 请求记录、
+novelfm 响应模式调试开关、以及最终方案用不上的 TLS 监听（:8888）；
+最终桥接只保留 8787 纯 HTTP 一条通道。
+
 ## 6. 清理
 
 - 移除为定位搜索问题临时加在 `desktop_bootstrap.py` 的 `search_watch` 中间件（不再写 `/tmp/hg_beta/api_watch.log`）。

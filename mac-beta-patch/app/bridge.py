@@ -450,17 +450,13 @@ class Handler(BaseHTTPRequestHandler):
         connection.close()
 
     def local_emulate(self, path: str, params: dict):
-        """Serve content for the app's redirected search/rank/detail requests."""
-        # The binary URL patch uses two 25-char aliases for this server:
-        #   /ab  -> https://127.0.0.1:8888/ab   (TLS listener)
-        #   /abc -> http://127.0.0.1:8787/abc   (plain listener)
-        # Normalize both onto /ab/ prefixes before dispatching.
+        """Serve content for the app's redirected rank/detail/search requests."""
+        # The binary URL patch rewrites the website base to the 25-char alias
+        # http://127.0.0.1:8787/abc, so base + "/rank/hot-drama" etc. arrive
+        # here; normalize onto the /ab/ prefixes used by the emulators below.
         if path.startswith("/abc/"):
             path = "/ab/" + path[len("/abc/"):]
-        log_local_request(self.command, path, params)
         if path.startswith("/novelfm"):
-            if novelfm_mode() == "404":
-                return self.send_json({"message": "not found"}, 404)
             return self.send_json(novelfm_payload(params))
         if path.startswith("/ab/rank/"):
             slug = path[len("/ab/rank/"):].split("/")[0]
@@ -679,19 +675,6 @@ setInterval(async()=>{{
             self.send_json({"error": type(exc).__name__}, 500)
 
 
-LOCAL_REQUEST_LOG = Path("/tmp/hg_local_requests.log")
-
-
-def log_local_request(command, path, params):
-    """Record requests redirected from the app's dead upstreams, for schema iteration."""
-    try:
-        with LOCAL_REQUEST_LOG.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps({"t": round(time.time(), 3), "method": command, "path": path,
-                                 "params": params}, ensure_ascii=False)[:4000] + "\n")
-    except OSError:
-        pass
-
-
 def backend_get(path_qs: str, timeout=40):
     port, key = backend_endpoint()
     if not port:
@@ -709,7 +692,6 @@ def backend_get(path_qs: str, timeout=40):
 
 
 def novelfm_payload(params: dict) -> dict:
-    mode = novelfm_mode()
     query = ""
     for name in ("query", "keyword", "word", "q", "search_key", "searchKey"):
         value = params.get(name)
@@ -745,25 +727,7 @@ def novelfm_payload(params: dict) -> dict:
     value = {"code": 0, "status": 0, "message": "success", "msg": "success"}
     value.update(page)
     value["data"] = dict(page)
-    # Experimental triggers for the app's official-website fallback search:
-    # business codes 203/205 or an HTTP error may make it fetch base + "/search".
-    if mode in ("203", "205"):
-        code = int(mode)
-        value["code"] = code
-        value["status"] = code
-        value["message"] = "use web search"
-        value["msg"] = "use web search"
     return value
-
-
-NOVELFM_MODE_FILE = Path("/tmp/hg_novelfm_mode")
-
-
-def novelfm_mode() -> str:
-    try:
-        return NOVELFM_MODE_FILE.read_text(encoding="utf-8").strip() or "shot"
-    except OSError:
-        return "shot"
 
 
 RANK_PAGES = {
@@ -911,43 +875,7 @@ def main():
     server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
     server.daemon_threads = True
     print(f"[bridge] listening on http://127.0.0.1:{args.port}", flush=True)
-    tls_server = start_tls_server(Handler)
-    print(f"[bridge] tls {'on https://127.0.0.1:8888' if tls_server else 'unavailable'}", flush=True)
     server.serve_forever()
-
-
-def start_tls_server(handler):
-    """Serve the same routes over TLS on :8888 for the app's https-only client."""
-    tls_dir = Path(__file__).resolve().parent.parent / "tls"
-    cert, key = tls_dir / "server.pem", tls_dir / "server.key"
-    if not (cert.exists() and key.exists()):
-        return None
-    try:
-        import ssl
-        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-        context.load_cert_chain(str(cert), str(key))
-
-        class TLSServer(ThreadingHTTPServer):
-            def get_request(self):
-                try:
-                    return super().get_request()
-                except Exception as exc:
-                    try:
-                        with Path("/tmp/hg_tls_handshake.log").open("a", encoding="utf-8") as fh:
-                            fh.write(time.strftime("%H:%M:%S ") + type(exc).__name__ +
-                                     ": " + str(exc)[:200] + "\n")
-                    except OSError:
-                        pass
-                    raise
-
-        server = TLSServer(("127.0.0.1", 8888), handler)
-        server.daemon_threads = True
-        server.socket = context.wrap_socket(server.socket, server_side=True)
-        threading.Thread(target=server.serve_forever, daemon=True).start()
-        return server
-    except Exception as exc:
-        print("[bridge] tls start failed: " + type(exc).__name__, flush=True)
-        return None
 
 
 if __name__ == "__main__":
