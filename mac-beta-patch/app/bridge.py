@@ -20,6 +20,7 @@ later app launches can sign in without scanning again; `logout` removes it.
 from __future__ import annotations
 
 import argparse
+import html
 import http.client
 import io
 import json
@@ -448,6 +449,29 @@ class Handler(BaseHTTPRequestHandler):
                 self.close_connection = True
         connection.close()
 
+    def local_emulate(self, path: str, params: dict):
+        """Serve content for the app's redirected search/rank/detail requests."""
+        # The binary URL patch uses two 25-char aliases for this server:
+        #   /ab  -> https://127.0.0.1:8888/ab   (TLS listener)
+        #   /abc -> http://127.0.0.1:8787/abc   (plain listener)
+        # Normalize both onto /ab/ prefixes before dispatching.
+        if path.startswith("/abc/"):
+            path = "/ab/" + path[len("/abc/"):]
+        log_local_request(self.command, path, params)
+        if path.startswith("/novelfm"):
+            if novelfm_mode() == "404":
+                return self.send_json({"message": "not found"}, 404)
+            return self.send_json(novelfm_payload(params))
+        if path.startswith("/ab/rank/"):
+            slug = path[len("/ab/rank/"):].split("/")[0]
+            return self.send_bytes(rank_page(slug), "text/html; charset=utf-8")
+        if path.startswith("/ab/detail"):
+            return self.send_bytes(detail_page(params.get("series_id") or ""),
+                                   "text/html; charset=utf-8")
+        if path.startswith("/ab/search"):
+            return self.send_bytes(web_search_page(params), "text/html; charset=utf-8")
+        return self.send_bytes(generic_page(), "text/html; charset=utf-8")
+
     def add_favorite(self):
         """Insert one series into the app's 收藏 table (read when the app starts)."""
         try:
@@ -532,6 +556,8 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/favorite" and self.command == "POST":
             return self.add_favorite()
         params = form_body(self)
+        if path.startswith("/novelfm") or path.startswith("/ab/") or path.startswith("/abc/"):
+            return self.local_emulate(path, params)
         if path == "/open-app":
             return self.open_app()
         if path == "/restart-app":
@@ -653,6 +679,225 @@ setInterval(async()=>{{
             self.send_json({"error": type(exc).__name__}, 500)
 
 
+LOCAL_REQUEST_LOG = Path("/tmp/hg_local_requests.log")
+
+
+def log_local_request(command, path, params):
+    """Record requests redirected from the app's dead upstreams, for schema iteration."""
+    try:
+        with LOCAL_REQUEST_LOG.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps({"t": round(time.time(), 3), "method": command, "path": path,
+                                 "params": params}, ensure_ascii=False)[:4000] + "\n")
+    except OSError:
+        pass
+
+
+def backend_get(path_qs: str, timeout=40):
+    port, key = backend_endpoint()
+    if not port:
+        return None
+    joiner = "&" if "?" in path_qs else "?"
+    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=timeout)
+    try:
+        connection.request("GET", path_qs + joiner + urllib.parse.urlencode({"api_key": key}))
+        response = connection.getresponse()
+        return json.loads(response.read())
+    except Exception:
+        return None
+    finally:
+        connection.close()
+
+
+def novelfm_payload(params: dict) -> dict:
+    mode = novelfm_mode()
+    query = ""
+    for name in ("query", "keyword", "word", "q", "search_key", "searchKey"):
+        value = params.get(name)
+        if value:
+            query = str(value).strip()
+            break
+    rows = []
+    if query:
+        payload = backend_get("/search/page?" + urllib.parse.urlencode({"q": query}))
+        rows = (payload or {}).get("results") or []
+    items = []
+    for row in rows[:20]:
+        sid = str(row.get("series_id") or row.get("seriesId") or "")
+        title = row.get("title") or ""
+        cover = row.get("cover") or ""
+        count = row.get("episode_cnt") or row.get("episodeCount") or 0
+        items.append({
+            "book_id": sid, "bookId": sid,
+            "book_name": title, "bookName": title, "book_title": title,
+            "book_identity": sid, "bookIdentity": sid,
+            "thumb_pic": cover, "thumb_url": cover, "cover": cover,
+            "cover_url": cover, "series_cover": cover,
+            "chapter_number": count, "serial_count": count,
+            "episode_count": count, "episode_cnt": count,
+            "series_id": sid,
+        })
+    page = {
+        "searchList": items, "results": items, "books": items,
+        "page_size": len(items), "pageSize": len(items),
+        "offset": 0, "session": "", "cursor": "", "end_marker": "",
+        "has_more": False, "hasMore": False, "total": len(items),
+    }
+    value = {"code": 0, "status": 0, "message": "success", "msg": "success"}
+    value.update(page)
+    value["data"] = dict(page)
+    # Experimental triggers for the app's official-website fallback search:
+    # business codes 203/205 or an HTTP error may make it fetch base + "/search".
+    if mode in ("203", "205"):
+        code = int(mode)
+        value["code"] = code
+        value["status"] = code
+        value["message"] = "use web search"
+        value["msg"] = "use web search"
+    return value
+
+
+NOVELFM_MODE_FILE = Path("/tmp/hg_novelfm_mode")
+
+
+def novelfm_mode() -> str:
+    try:
+        return NOVELFM_MODE_FILE.read_text(encoding="utf-8").strip() or "shot"
+    except OSError:
+        return "shot"
+
+
+RANK_PAGES = {
+    "hot-drama": ("hot", "热门短剧榜"),
+    "hot-comic-drama": ("recommend", "热门漫剧榜"),
+    "hot-real-drama": ("browse:short_play", "热门真人短剧榜"),
+    "hot-ai-drama": ("browse:ai_series", "热门AI短剧榜"),
+}
+
+
+def rank_items(slug: str):
+    board, title = RANK_PAGES.get(slug, ("hot", "热门短剧榜"))
+    if board.startswith("browse:"):
+        payload = backend_get("/browse?genre=" + board.split(":", 1)[1] + "&limit=60") or {}
+    else:
+        payload = backend_get("/rank?board=" + board + "&limit=60") or {}
+    rows = payload.get("items") or []
+    items = []
+    for row in rows[:60]:
+        sid = str(row.get("series_id") or "")
+        if not sid.isdigit():
+            continue
+        items.append({
+            "series_id": sid,
+            "title": row.get("title") or "",
+            "cover": row.get("cover") or "",
+            "intro": row.get("intro") or "",
+            "count": int(row.get("episode_cnt") or row.get("episode_count") or 0) or 1,
+            "hot": row.get("play_cnt") or 0,
+        })
+    return title, items
+
+
+def escape_html(value) -> str:
+    return html.escape(str(value), quote=True)
+
+
+def rank_page(slug: str) -> bytes:
+    title, items = rank_items(slug)
+    cards = []
+    for idx, item in enumerate(items):
+        hot = item["hot"]
+        try:
+            hot_text = f"{hot / 10000:.1f}万热度" if hot >= 10000 else f"{hot}热度"
+        except Exception:
+            hot_text = ""
+        rid = "rank-title-" + str(idx + 1)
+        cards.append(
+            "<article aria-labelledby=\"" + rid + "\">"
+            "<h2 id=\"" + rid + "\">" + escape_html(item["title"]) + "</h2>"
+            "<a class=\"rank-link\" href=\"/detail?series_id=" + item["series_id"] +
+            "\" aria-label=\"播放第 1 集 " + escape_html(item["title"]) + "\">"
+            "<img src=\"" + escape_html(item["cover"]) + "\" alt=\"" + escape_html(item["title"]) + "\">"
+            "<p class=\"item-title\">" + escape_html(item["title"]) + "</p>"
+            "<p class=\"item-categories\"><span class=\"description\">" +
+            escape_html(item["intro"][:120]) + "</span></p>"
+            "<div class=\"item-tags\"><span class=\"episode\">更新至" + str(item["count"]) +
+            "集 全共" + str(item["count"]) + "集</span>"
+            "<span class=\"hot-score\">" + escape_html(hot_text) + "</span></div>"
+            "</a></article>"
+        )
+    router = {"loaderData": {"rank_" + slug + "/page": {
+        "req": {"webID": "LOCAL" + str(int(time.time()))}}}}
+    body = ("<!doctype html><html><head><meta charset='utf-8'><title>" + escape_html(title) +
+            "</title></head><body><h1>" + escape_html(title) + "</h1>" + "".join(cards) +
+            "<script>_ROUTER_DATA = " + json.dumps(router, ensure_ascii=False) + ";</script></body></html>")
+    return body.encode("utf-8")
+
+
+def detail_page(series_id: str) -> bytes:
+    payload = backend_get("/episodes?series_id=" + urllib.parse.quote(str(series_id))) or {}
+    meta = payload.get("meta") or {}
+    eps = payload.get("episodes") or []
+    count = len(eps) or int(meta.get("episode_cnt") or 0)
+    title = meta.get("title") or ""
+    cover = meta.get("cover") or ""
+    intro = meta.get("intro") or ""
+    info = {
+        "series_id": str(meta.get("series_id") or series_id),
+        "series_title": title, "series_name": title, "title": title,
+        "series_cover": cover, "cover_url": cover, "thumb_url": cover,
+        "description": intro, "series_intro": intro,
+        "episode_count": count, "total_episode": count, "episode_cnt": count,
+        "web_accessible_episodes": count, "accessible_episode_cnt": count,
+        "vid_list": [e.get("vid") for e in eps],
+        "video_data": [{"index": e.get("index"), "vid": e.get("vid"), "title": e.get("title"),
+                        "duration": e.get("duration"), "stream_url": "/stream?vid=" + str(e.get("vid"))}
+                       for e in eps],
+        "celebrities": [], "hot_score_data": meta.get("play_cnt") or 0,
+        "isSuccess": True, "status": 200, "publicWeb": True, "genre": "短剧",
+    }
+    router = {"loaderData": {"detail/page": info,
+                             "detail_" + info["series_id"] + "/page": info},
+              "data": info}
+    body = ("<!doctype html><html><head><meta charset='utf-8'><title>" + escape_html(title) +
+            "</title></head><body><p class=\"title\">" + escape_html(title) + "</p>"
+            "<script>_ROUTER_DATA = " + json.dumps(router, ensure_ascii=False) + ";</script></body></html>")
+    return body.encode("utf-8")
+
+
+def web_search_page(params: dict) -> bytes:
+    query = ""
+    for name in ("keyword", "q", "query", "searchKeyword", "word"):
+        value = params.get(name)
+        if value:
+            query = str(value).strip()
+            break
+    payload = backend_get("/search/page?" + urllib.parse.urlencode({"q": query})) or {}
+    rows = payload.get("results") or []
+    vids = []
+    for row in rows[:20]:
+        sid = str(row.get("series_id") or "")
+        vids.append({
+            "book_id": sid, "book_title": row.get("title") or "",
+            "thumb_url": row.get("cover") or "",
+            "series_id": sid, "series_title": row.get("title") or "",
+            "series_cover": row.get("cover") or "", "series_intro": row.get("intro") or "",
+            "episode_cnt": row.get("episode_cnt") or 0,
+            "abstract": row.get("intro") or "",
+        })
+    route_data = {"isSuccess": True, "status": 200, "video_data": vids,
+                  "genre": "短剧", "publicWeb": True, "searchList": vids, "results": vids}
+    router = {"loaderData": {"search/page": route_data}, "data": route_data}
+    body = ("<!doctype html><html><head><meta charset='utf-8'><title>搜索</title></head><body>"
+            "<script>_ROUTER_DATA = " + json.dumps(router, ensure_ascii=False) + ";</script></body></html>")
+    return body.encode("utf-8")
+
+
+def generic_page() -> bytes:
+    body = ("<!doctype html><html><head><meta charset='utf-8'></head><body>"
+            "<script>_ROUTER_DATA = {\"loaderData\": {}};</script></body></html>")
+    return body.encode("utf-8")
+
+
 def main():
     global ACCOUNT
     ACCOUNT = load_account()
@@ -666,7 +911,43 @@ def main():
     server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
     server.daemon_threads = True
     print(f"[bridge] listening on http://127.0.0.1:{args.port}", flush=True)
+    tls_server = start_tls_server(Handler)
+    print(f"[bridge] tls {'on https://127.0.0.1:8888' if tls_server else 'unavailable'}", flush=True)
     server.serve_forever()
+
+
+def start_tls_server(handler):
+    """Serve the same routes over TLS on :8888 for the app's https-only client."""
+    tls_dir = Path(__file__).resolve().parent.parent / "tls"
+    cert, key = tls_dir / "server.pem", tls_dir / "server.key"
+    if not (cert.exists() and key.exists()):
+        return None
+    try:
+        import ssl
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.load_cert_chain(str(cert), str(key))
+
+        class TLSServer(ThreadingHTTPServer):
+            def get_request(self):
+                try:
+                    return super().get_request()
+                except Exception as exc:
+                    try:
+                        with Path("/tmp/hg_tls_handshake.log").open("a", encoding="utf-8") as fh:
+                            fh.write(time.strftime("%H:%M:%S ") + type(exc).__name__ +
+                                     ": " + str(exc)[:200] + "\n")
+                    except OSError:
+                        pass
+                    raise
+
+        server = TLSServer(("127.0.0.1", 8888), handler)
+        server.daemon_threads = True
+        server.socket = context.wrap_socket(server.socket, server_side=True)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        return server
+    except Exception as exc:
+        print("[bridge] tls start failed: " + type(exc).__name__, flush=True)
+        return None
 
 
 if __name__ == "__main__":

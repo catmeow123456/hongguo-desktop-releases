@@ -68,6 +68,14 @@ if [ -d "$ROOT/third_party/phone-account-protocol" ] && [ ! -d "$BACKEND/phone-a
 fi
 echo "后端补丁已写入（原文件备份在 $BACKUP）"
 
+# Patch the app binary so 发现片单 / detail enrichment fetches land on the
+# bridge's emulated pages (see bin/patch_urls.py).  Idempotent, backs up first.
+if python3 "$ROOT/bin/patch_urls.py" "$LAUNCHER" "$STATE/backup"; then
+  echo "App 内官网抓取通道已接入本地仿真（发现片单/详情）。"
+else
+  echo "二进制补丁失败；发现片单将继续使用官网原始地址。" >&2
+fi
+
 rm -rf "$SEARCH_APP"
 mkdir -p "$SEARCH_APP/Contents/MacOS" "$SEARCH_APP/Contents/Resources"
 cp "$ROOT/bin/search-app/Info.plist" "$SEARCH_APP/Contents/Info.plist"

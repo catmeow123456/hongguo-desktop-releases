@@ -39,17 +39,49 @@
 
 验证：收藏中《闪婚，她甜的过头》显示「第 1/78 集」，第 1 集 02:16、第 2 集 02:09，均可播放与切集。
 
-## 5. 清理
+## 5. 发现片单 / 详情本地仿真（2026-11-09）
+
+官网 `hongguoduanju.com` 的榜单页与搜索页已改为客户端渲染（`content` 为空、
+无 `_ROUTER_DATA`），App 的 Rust 抓取解析不到数据，导致发现页只显示
+「更新失败，保留上次片单」。
+
+排查结论：
+
+- App 有两类 HTTP 客户端。官网抓取（片单/详情）接受任意 URL；搜索客户端
+  强制 `https` 且使用编译内置的根证书（rustls + webpki-roots），既不读
+  钥匙串，也不接受纯 http，因此**搜索通道在本地无解**，保持原状。
+- 官网抓取通道改为等长 URL 补丁：`https://hongguoduanju.com`（25 字节）→
+  `http://127.0.0.1:8787/abc`（25 字节），拼接出的
+  `/abc/rank/*`、`/abc/detail` 落到桥接仿真路由。
+
+新增：
+
+- `bin/patch_urls.py`：幂等二进制补丁（先备份到 `$STATE/backup`，替换
+  4 处 URL 常量后 ad-hoc 重签），由 `install.sh` 自动调用。
+- `bridge.py` 仿真层：`rank_page()` 按 App 解析器的选择器生成榜单 HTML
+  （`article[aria-labelledby=rank-title-N]` + 对应 `h2 id`、
+  `a[href^='/detail?series_id=']`、`aria-label="播放第 1 集 …"`、
+  `p[class*='categories'] span[class*='description']`、
+  `span.episode`「更新至N集 全共N集」、`_ROUTER_DATA` + `req.webID`）；
+  `detail_page()` 输出详情字段群与 `video_data`；另含 `/novelfm` 搜索
+  仿真（当前仅调试用，搜索客户端不会连 http，见上）。
+
+验证（本机 1.0.9 beta.2）：点「刷新片单」后 `/abc/rank/hot-drama → 200`，
+发现页横幅由「更新失败」变为正常，卡片标题/简介/集数解析成功；点击卡片
+打开详情并起播（`/app/episodes → 200`，播放器正常渲染）。
+
+## 6. 清理
 
 - 移除为定位搜索问题临时加在 `desktop_bootstrap.py` 的 `search_watch` 中间件（不再写 `/tmp/hg_beta/api_watch.log`）。
 
-## 6. 安装脚本验证
+## 7. 安装脚本验证
 
 - 从 `mac-v1.0.9-beta.2` DMG 复制一份干净 App，在 `--no-start` 模式下运行 `install.sh`：后端文件与 `third_party/phone-account-protocol` 复制正确，补丁模块可导入，`红果搜片.app` 生成并通过 ad-hoc 签名。
 - 本机实装验证：搜索、加载更多、网页播放、写入收藏、App 内 78 集播放与切集均通过（见上文）。
 
 ## 未改动 / 已知限制
 
-- App 内置搜索框仍然不可用。
+- App 内置搜索框仍然不可用（搜索客户端强制 https + 内置根证书，本地无法
+  劫持；需要公网域名 + 证书中继才能打通，暂不做）。搜索请使用 红果搜片。
 - App 播放页的弹幕、评论等上游能力未逐一验证。
 - 依赖测试版内部文件布局；升级 App 后补丁可能需要更新。
