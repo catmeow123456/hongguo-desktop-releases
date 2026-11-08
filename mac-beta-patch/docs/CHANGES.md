@@ -70,6 +70,10 @@
 发现页横幅由「更新失败」变为正常，卡片标题/简介/集数解析成功；点击卡片
 打开详情并起播（`/app/episodes → 200`，播放器正常渲染）。
 
+排查用的按 PID AX 自动化小工具收进 `bin/ax/`（winid / axdump / axpress /
+axsearch / axconfirm，见其 README）：不抢焦点，可在用户使用其他窗口时
+驱动和检查 App UI；需要给终端授予「辅助功能」权限。
+
 ## 6. 清理
 
 - 移除为定位搜索问题临时加在 `desktop_bootstrap.py` 的 `search_watch` 中间件（不再写 `/tmp/hg_beta/api_watch.log`）。
