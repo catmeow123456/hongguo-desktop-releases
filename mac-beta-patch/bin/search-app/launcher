@@ -1,0 +1,16 @@
+#!/bin/bash
+# Dock entry for the local search page. Starts the bridge + app if needed,
+# waits for the app backend, then opens http://127.0.0.1:8787/lab.
+set -u
+STATE="$HOME/Library/Application Support/HongguoBridge"
+
+"$STATE/bin/launch.sh" >/dev/null 2>&1 || true
+
+for _ in $(seq 1 60); do
+  if curl -fsS --max-time 1 http://127.0.0.1:8787/app-ready 2>/dev/null | grep -q '"ready":true'; then
+    break
+  fi
+  sleep 0.5
+done
+
+open "http://127.0.0.1:8787/lab"

@@ -1,5 +1,7 @@
 # 红果短剧｜Windows、Mac 测试版与 Android TV
 
+> **本仓库是个人 fork。** Mac 1.0.9 beta.2 的本地修复（持久登录、可用搜索、收藏与播放）整理在 [`mac-beta-patch/`](mac-beta-patch/)，安装方法见该目录的 [README](mac-beta-patch/README.md)。上游发行说明保持原样。
+
 在 Windows 电脑上找剧、接着上次看。支持搜索、收藏、本机观看进度、选集、倍速和自动连播。
 
 **由渠道有数独立维护 · 免费使用 · Windows 正式版 1.0.20**

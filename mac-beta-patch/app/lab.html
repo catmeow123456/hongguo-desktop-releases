@@ -1,0 +1,800 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>红果搜片</title>
+<style>
+  :root {
+    --pink: #ff2f56;
+    --pink-dark: #e21c43;
+    --bg: #f5f5f7;
+    --card: #ffffff;
+    --text: #1d1d1f;
+    --muted: #86868b;
+    --line: #e8e8ed;
+    --radius: 16px;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Helvetica Neue", sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text); }
+  body { min-height: 100vh; }
+  button { font: inherit; color: inherit; cursor: pointer; }
+  input { font: inherit; }
+  .hidden { display: none !important; }
+
+  .topbar {
+    position: sticky; top: 0; z-index: 20;
+    display: flex; align-items: center; gap: 26px;
+    padding: 14px 34px;
+    background: rgba(255, 255, 255, .86);
+    backdrop-filter: saturate(180%) blur(18px);
+    border-bottom: 1px solid var(--line);
+  }
+  .brand { display: flex; align-items: center; gap: 12px; text-decoration: none; color: inherit; flex: 0 0 auto; }
+  .logo {
+    width: 42px; height: 42px; border-radius: 13px;
+    background: linear-gradient(145deg, #ff5a75, var(--pink));
+    display: flex; align-items: center; justify-content: center;
+    box-shadow: 0 6px 16px rgba(255, 47, 86, .28);
+  }
+  .logo::before {
+    content: ""; width: 0; height: 0;
+    border-left: 13px solid #fff; border-top: 8px solid transparent; border-bottom: 8px solid transparent;
+    margin-left: 4px;
+  }
+  .brand-text strong { display: block; font-size: 19px; letter-spacing: .5px; }
+  .brand-text small { display: block; margin-top: 1px; font-size: 11.5px; color: var(--muted); letter-spacing: .4px; }
+
+  .search {
+    flex: 1 1 auto; max-width: 720px;
+    display: flex; align-items: center; gap: 10px;
+    padding: 6px 6px 6px 16px;
+    background: #f2f2f5; border: 1px solid transparent; border-radius: 14px;
+    transition: border-color .18s, background .18s, box-shadow .18s;
+  }
+  .search:focus-within { background: #fff; border-color: rgba(255, 47, 86, .45); box-shadow: 0 0 0 4px rgba(255, 47, 86, .08); }
+  .search svg { flex: 0 0 auto; color: #9a9aa0; }
+  .search input { flex: 1; border: 0; outline: 0; background: transparent; font-size: 15px; padding: 8px 0; }
+  .search button {
+    border: 0; border-radius: 10px; padding: 9px 20px;
+    background: var(--pink); color: #fff; font-weight: 600; font-size: 14px;
+    transition: background .15s;
+  }
+  .search button:hover { background: var(--pink-dark); }
+  .search button:disabled { opacity: .55; cursor: default; }
+
+  .ghost {
+    flex: 0 0 auto; border: 1px solid var(--line); background: #fff;
+    border-radius: 12px; padding: 10px 16px; font-size: 14px; color: #444;
+    transition: border-color .15s, color .15s;
+  }
+  .ghost:hover { border-color: #cfcfd6; color: #000; }
+
+  .banner {
+    margin: 18px 34px 0; padding: 12px 18px; border-radius: 12px;
+    background: #fff7e6; border: 1px solid #ffe1a6; color: #8a5b00; font-size: 13.5px;
+  }
+  .banner.bad { background: #fff1f1; border-color: #ffc9c9; color: #a32323; }
+
+  main { max-width: 1560px; margin: 0 auto; padding: 34px 34px 72px; }
+
+  .empty { text-align: center; padding: 76px 20px 40px; }
+  .empty h1 { margin: 0 0 12px; font-size: 40px; letter-spacing: -.5px; }
+  .empty h1 em { font-style: normal; color: var(--pink); }
+  .empty p { margin: 0 auto 34px; max-width: 560px; color: var(--muted); font-size: 15px; line-height: 1.7; }
+  .chips { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; max-width: 680px; margin: 0 auto; }
+  .chip {
+    border: 1px solid var(--line); background: #fff; border-radius: 999px;
+    padding: 9px 18px; font-size: 14px; color: #444; transition: all .15s;
+  }
+  .chip:hover { border-color: rgba(255, 47, 86, .5); color: var(--pink); transform: translateY(-1px); }
+  .chip.recent { background: #fff2f5; border-color: #ffd3dd; color: #b3163a; }
+
+  .meta-line { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; margin-bottom: 20px; }
+  #result-meta { color: var(--muted); font-size: 13.5px; }
+  #result-meta strong { color: var(--text); font-size: 15px; }
+
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(172px, 1fr)); gap: 26px 18px; }
+  .card { min-width: 0; display: flex; flex-direction: column; }
+  .cover {
+    position: relative; display: block; width: 100%; padding: 0; border: 0;
+    aspect-ratio: 3 / 4; border-radius: 14px; overflow: hidden; background: #ececf0;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, .05);
+  }
+  .cover img { width: 100%; height: 100%; object-fit: cover; display: block; transition: transform .35s ease; }
+  .card:hover .cover img { transform: scale(1.035); }
+  .cover.noimg::before {
+    content: "红果"; position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    color: #c5c5cc; font-size: 22px; font-weight: 700; letter-spacing: 3px;
+  }
+  .cover .badge {
+    position: absolute; right: 8px; bottom: 8px; padding: 3px 8px; border-radius: 7px;
+    background: rgba(0, 0, 0, .62); color: #fff; font-size: 11.5px; letter-spacing: .2px;
+  }
+  .cover .playdot {
+    position: absolute; left: 50%; top: 50%; width: 54px; height: 54px; margin: -27px 0 0 -27px;
+    border-radius: 50%; background: rgba(255, 47, 86, .92);
+    display: flex; align-items: center; justify-content: center;
+    opacity: 0; transform: scale(.86); transition: all .2s ease;
+    box-shadow: 0 8px 22px rgba(0, 0, 0, .28);
+  }
+  .cover .playdot::before {
+    content: ""; width: 0; height: 0; margin-left: 4px;
+    border-left: 15px solid #fff; border-top: 9px solid transparent; border-bottom: 9px solid transparent;
+  }
+  .card:hover .cover .playdot { opacity: 1; transform: scale(1); }
+  .card-title {
+    margin: 11px 2px 0; font-size: 14.5px; font-weight: 600; line-height: 1.4;
+    display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden;
+    min-height: 2.8em;
+  }
+  .card-sub { margin: 5px 2px 0; font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .card-actions { display: flex; align-items: center; gap: 8px; margin: 9px 2px 0; }
+  .mini {
+    border: 1px solid var(--line); background: #fff; border-radius: 8px;
+    padding: 4px 10px; font-size: 12px; color: #555;
+  }
+  .mini:hover { border-color: #cfcfd6; color: #000; }
+  .mini.faved { color: var(--pink); border-color: #ffc8d4; background: #fff6f8; }
+
+  .more { display: flex; justify-content: center; padding: 40px 0 0; }
+  #more {
+    border: 1px solid var(--line); background: #fff; border-radius: 12px;
+    padding: 11px 34px; font-size: 14px; color: #444;
+  }
+  #more:hover { border-color: #cfcfd6; }
+
+  .skeleton { border-radius: 14px; overflow: hidden; }
+  .skeleton .sk-cover { aspect-ratio: 3 / 4; background: linear-gradient(100deg, #ececf0 25%, #f6f6f8 40%, #ececf0 55%); background-size: 250% 100%; animation: sheen 1.4s infinite; }
+  .skeleton .sk-line { height: 12px; margin: 12px 2px 0; border-radius: 6px; background: #ececf0; }
+  .skeleton .sk-line.short { width: 55%; }
+  @keyframes sheen { from { background-position: 100% 0; } to { background-position: -100% 0; } }
+
+  footer {
+    border-top: 1px solid var(--line); padding: 22px 34px 30px;
+    color: #a0a0a6; font-size: 12px; text-align: center; line-height: 1.8;
+  }
+
+  .toast {
+    position: fixed; left: 50%; bottom: 34px; z-index: 80;
+    transform: translate(-50%, 20px); opacity: 0; pointer-events: none;
+    max-width: min(620px, calc(100vw - 40px));
+    display: flex; align-items: center; gap: 14px;
+    padding: 13px 20px; border-radius: 14px;
+    background: rgba(30, 30, 32, .94); color: #fff; font-size: 14px;
+    box-shadow: 0 14px 40px rgba(0, 0, 0, .22);
+    transition: all .22s ease;
+  }
+  .toast.show { opacity: 1; transform: translate(-50%, 0); pointer-events: auto; }
+  .toast button {
+    border: 0; border-radius: 8px; padding: 6px 12px; white-space: nowrap;
+    background: var(--pink); color: #fff; font-size: 13px; font-weight: 600;
+  }
+
+  .player { position: fixed; inset: 0; z-index: 60; display: flex; align-items: center; justify-content: center; padding: 28px; }
+  .player-backdrop { position: absolute; inset: 0; background: rgba(0, 0, 0, .56); backdrop-filter: blur(3px); }
+  .player-panel {
+    position: relative; display: flex; width: min(1440px, 100%); height: min(860px, 100%);
+    border-radius: 18px; overflow: hidden; background: #0e0e10; color: #f2f2f4;
+    box-shadow: 0 30px 90px rgba(0, 0, 0, .45);
+  }
+  .video-col { position: relative; flex: 1 1 auto; min-width: 0; min-height: 0; overflow: hidden; background: #000; display: flex; align-items: center; justify-content: center; }
+  .video-col video { width: 100%; height: 100%; object-fit: contain; background: #000; }
+  .video-status {
+    position: absolute; left: 50%; bottom: 78px; transform: translateX(-50%);
+    max-width: calc(100% - 48px); padding: 10px 18px; border-radius: 10px;
+    background: rgba(0, 0, 0, .66); color: #e7e7ea; font-size: 13px; text-align: center;
+    pointer-events: none; transition: opacity .2s;
+  }
+  .video-status.hidden { display: none; }
+  .video-status.bad { pointer-events: auto; }
+  .video-status a { color: #ff9db0; }
+
+  .side { flex: 0 0 342px; display: flex; flex-direction: column; background: #17171a; border-left: 1px solid #232327; min-height: 0; }
+  .side header { flex: 0 0 auto; display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 24px 22px 8px; }
+  .side h2 { margin: 0; font-size: 19px; line-height: 1.35; }
+  .side header button { border: 0; background: transparent; color: #8f8f96; font-size: 20px; line-height: 1; padding: 2px 4px; }
+  .side header button:hover { color: #fff; }
+  .tags { flex: 0 0 auto; display: flex; flex-wrap: wrap; gap: 6px; padding: 0 22px; }
+  .tag { border-radius: 6px; padding: 3px 8px; background: #26262b; color: #b9b9c0; font-size: 11.5px; }
+  .intro { flex: 0 0 auto; margin: 14px 22px 0; color: #9b9ba3; font-size: 13px; line-height: 1.7; max-height: 96px; overflow: auto; }
+  .side-actions { flex: 0 0 auto; padding: 16px 22px 4px; }
+  #p-fav {
+    width: 100%; border: 1px solid #3a3a40; background: #202024; color: #eee;
+    border-radius: 10px; padding: 10px 12px; font-size: 13.5px;
+  }
+  #p-fav:hover { border-color: #56565e; }
+  #p-fav.faved { border-color: rgba(255, 47, 86, .55); color: #ff8097; background: rgba(255, 47, 86, .08); }
+  .ep-head { display: flex; justify-content: space-between; padding: 20px 22px 10px; color: #a6a6ad; font-size: 12.5px; }
+  .episodes { flex: 1 1 auto; overflow: auto; display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; padding: 0 22px 24px; align-content: start; }
+  .ep {
+    border: 1px solid #2c2c32; background: #1d1d21; color: #b9b9c0;
+    border-radius: 8px; padding: 9px 0; font-size: 12.5px; text-align: center;
+  }
+  .ep:hover { border-color: #4a4a52; color: #fff; }
+  .ep.active { background: var(--pink); border-color: var(--pink); color: #fff; font-weight: 600; }
+
+  @media (max-width: 980px) {
+    .topbar { flex-wrap: wrap; gap: 12px; padding: 12px 18px; }
+    .search { order: 3; flex-basis: 100%; max-width: none; }
+    main { padding: 22px 18px 60px; }
+    .empty h1 { font-size: 31px; }
+    .player { padding: 0; }
+    .player-panel { flex-direction: column; border-radius: 0; height: 100%; }
+    .video-col { flex: 0 0 46%; min-height: 0; }
+    .side { flex: 1 1 54%; min-height: 0; overflow-y: auto; border-left: 0; border-top: 1px solid #232327; }
+    .intro { max-height: none; }
+    .episodes { flex: 0 0 auto; overflow: visible; }
+    .episodes { grid-template-columns: repeat(6, 1fr); }
+  }
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <a class="brand" href="/lab">
+    <span class="logo" aria-hidden="true"></span>
+    <span class="brand-text"><strong>红果搜片</strong><small>本地搜索 · 即搜即看</small></span>
+  </a>
+  <form class="search" id="search-form" role="search">
+    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" aria-hidden="true">
+      <circle cx="11" cy="11" r="7"></circle><path d="m20 20-3.6-3.6"></path>
+    </svg>
+    <input id="q" type="search" placeholder="搜索短剧名、演员或题材" autocomplete="off" spellcheck="false" aria-label="搜索短剧">
+    <button id="search-btn" type="submit">搜索</button>
+  </form>
+  <button class="ghost" id="open-app">打开 App</button>
+</header>
+
+<div class="banner hidden" id="banner">正在连接红果本地服务…</div>
+
+<main>
+  <section class="empty" id="empty">
+    <h1>搜你想看的<em>短剧</em></h1>
+    <p>搜索由红果 App 的本地后端直接提供，结果可以马上播放，也可以加入 App 的收藏夹。</p>
+    <div class="chips" id="chips"></div>
+  </section>
+
+  <section class="hidden" id="results">
+    <div class="meta-line">
+      <span id="result-meta"></span>
+      <span id="result-note" style="font-size:12px;color:#a0a0a6">搜索结果来自本地后端 · 不经过 App 内置搜索</span>
+    </div>
+    <div class="grid" id="grid"></div>
+    <div class="more hidden" id="more-wrap"><button id="more">加载更多</button></div>
+  </section>
+
+  <section class="hidden" id="loading">
+    <div class="grid" id="skeleton"></div>
+  </section>
+</main>
+
+<footer>本页面由本机 127.0.0.1:8787 提供，仅这台电脑可访问 · 搜索、剧集与播放均走红果 App 的本地后端</footer>
+
+<div class="toast" id="toast"><span id="toast-text"></span><button id="toast-action" class="hidden"></button></div>
+
+<div class="player hidden" id="player" role="dialog" aria-modal="true" aria-label="剧集播放">
+  <div class="player-backdrop" data-close></div>
+  <div class="player-panel">
+    <div class="video-col">
+      <video id="video" controls playsinline preload="metadata"></video>
+      <div class="video-status" id="video-status">选择一集开始播放</div>
+    </div>
+    <aside class="side">
+      <header>
+        <h2 id="p-title"></h2>
+        <button type="button" data-close aria-label="关闭">✕</button>
+      </header>
+      <div class="tags" id="p-tags"></div>
+      <p class="intro" id="p-intro"></p>
+      <div class="side-actions"><button id="p-fav" type="button">加入 App 收藏</button></div>
+      <div class="ep-head"><span>选集</span><span id="p-count"></span></div>
+      <div class="episodes" id="episodes"></div>
+    </aside>
+  </div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  var $ = function (selector) { return document.querySelector(selector); };
+  var state = { q: "", cursor: null, items: [], current: null, episodes: [], episode: 1, faved: false, searching: false };
+  var RECENT_KEY = "hongguo.lab.recent";
+  var POPULAR = ["闪婚", "霸总", "重生", "穿越", "甜宠", "逆袭", "悬疑", "古装"];
+
+  function sleep(ms) { return new Promise(function (resolve) { setTimeout(resolve, ms); }); }
+
+  function api(path, options) {
+    return fetch(path, options).then(function (response) {
+      return response.text().then(function (text) {
+        var value = null;
+        try { value = text ? JSON.parse(text) : null; } catch (error) { value = null; }
+        if (!response.ok) {
+          var detail = (value && (value.detail || value.error)) || ("HTTP " + response.status);
+          var failure = new Error(detail);
+          failure.status = response.status;
+          throw failure;
+        }
+        return value;
+      });
+    });
+  }
+
+  function readRecent() {
+    try {
+      var value = JSON.parse(localStorage.getItem(RECENT_KEY) || "[]");
+      return Array.isArray(value) ? value.filter(function (item) { return typeof item === "string"; }).slice(0, 6) : [];
+    } catch (error) { return []; }
+  }
+
+  function remember(query) {
+    var list = readRecent().filter(function (item) { return item !== query; });
+    list.unshift(query);
+    try { localStorage.setItem(RECENT_KEY, JSON.stringify(list.slice(0, 6))); } catch (error) { /* private mode */ }
+  }
+
+  function renderChips() {
+    var box = $("#chips");
+    box.textContent = "";
+    var recent = readRecent();
+    var seen = {};
+    recent.concat(POPULAR).forEach(function (text) {
+      if (seen[text]) return;
+      seen[text] = true;
+      var button = document.createElement("button");
+      button.type = "button";
+      button.className = "chip" + (recent.indexOf(text) >= 0 ? " recent" : "");
+      button.textContent = text;
+      button.addEventListener("click", function () { $("#q").value = text; runSearch(text, false); });
+      box.appendChild(button);
+    });
+  }
+
+  function showToast(message, actionLabel, action) {
+    var toast = $("#toast");
+    $("#toast-text").textContent = message;
+    var button = $("#toast-action");
+    button.onclick = null;
+    if (actionLabel && action) {
+      button.textContent = actionLabel;
+      button.classList.remove("hidden");
+      button.onclick = function () { hideToast(); action(); };
+    } else {
+      button.classList.add("hidden");
+    }
+    toast.classList.add("show");
+    clearTimeout(showToast.timer);
+    showToast.timer = setTimeout(hideToast, 7000);
+  }
+
+  function hideToast() {
+    $("#toast").classList.remove("show");
+  }
+
+  function setBanner(text, bad) {
+    var banner = $("#banner");
+    if (!text) { banner.classList.add("hidden"); return; }
+    banner.textContent = text;
+    banner.classList.toggle("bad", !!bad);
+    banner.classList.remove("hidden");
+  }
+
+  var ready = false;
+
+  async function waitForBackend() {
+    for (var attempt = 0; attempt < 90; attempt++) {
+      try {
+        var value = await api("/app-ready");
+        if (value && value.ready) {
+          ready = true;
+          setBanner("");
+          return true;
+        }
+      } catch (error) { /* bridge may still be waking up */ }
+      ready = false;
+      setBanner("正在启动红果本地服务…如果 App 没有打开，请先启动「红果短剧 增强版」", false);
+      await sleep(1000);
+    }
+    setBanner("红果本地服务没有响应。请先打开「红果短剧 增强版」，再刷新本页。", true);
+    return false;
+  }
+
+  function skeleton() {
+    var box = $("#skeleton");
+    box.textContent = "";
+    for (var index = 0; index < 12; index++) {
+      var item = document.createElement("div");
+      item.className = "skeleton";
+      var cover = document.createElement("div");
+      cover.className = "sk-cover";
+      var line = document.createElement("div");
+      line.className = "sk-line";
+      var shortLine = document.createElement("div");
+      shortLine.className = "sk-line short";
+      item.appendChild(cover);
+      item.appendChild(line);
+      item.appendChild(shortLine);
+      box.appendChild(item);
+    }
+  }
+
+  function showLoading(on) {
+    $("#loading").classList.toggle("hidden", !on);
+    if (on && !$("#skeleton").childElementCount) skeleton();
+  }
+
+  function cardFor(item) {
+    var card = document.createElement("article");
+    card.className = "card";
+
+    var cover = document.createElement("button");
+    cover.type = "button";
+    cover.className = "cover";
+    cover.setAttribute("aria-label", "播放 " + item.title);
+
+    var image = document.createElement("img");
+    image.loading = "lazy";
+    image.alt = item.title || "";
+    if (item.cover) {
+      image.src = "/app/img?url=" + encodeURIComponent(item.cover);
+      image.addEventListener("error", function () {
+        image.remove();
+        cover.classList.add("noimg");
+      });
+    } else {
+      cover.classList.add("noimg");
+    }
+    cover.appendChild(image);
+
+    var badge = document.createElement("span");
+    badge.className = "badge";
+    badge.textContent = item.episode_cnt ? "全 " + item.episode_cnt + " 集" : "短剧";
+    cover.appendChild(badge);
+
+    var dot = document.createElement("span");
+    dot.className = "playdot";
+    cover.appendChild(dot);
+
+    cover.addEventListener("click", function () { openSeries(item); });
+
+    var title = document.createElement("h3");
+    title.className = "card-title";
+    title.textContent = item.title || "未命名";
+
+    var sub = document.createElement("p");
+    sub.className = "card-sub";
+    sub.textContent = item.intro || "";
+
+    var actions = document.createElement("div");
+    actions.className = "card-actions";
+    var playButton = document.createElement("button");
+    playButton.type = "button";
+    playButton.className = "mini";
+    playButton.textContent = "播放";
+    playButton.addEventListener("click", function () { openSeries(item); });
+    var favButton = document.createElement("button");
+    favButton.type = "button";
+    favButton.className = "mini";
+    favButton.textContent = "收藏";
+    favButton.addEventListener("click", function () {
+      favButton.disabled = true;
+      addFavorite(item).then(function () {
+        favButton.classList.add("faved");
+        favButton.textContent = "已收藏";
+      }).catch(function () {
+        favButton.disabled = false;
+      });
+    });
+    actions.appendChild(playButton);
+    actions.appendChild(favButton);
+
+    card.appendChild(cover);
+    card.appendChild(title);
+    card.appendChild(sub);
+    card.appendChild(actions);
+    return card;
+  }
+
+  function renderResults() {
+    var grid = $("#grid");
+    grid.textContent = "";
+    state.items.forEach(function (item) { grid.appendChild(cardFor(item)); });
+    $("#results").classList.remove("hidden");
+    $("#empty").classList.add("hidden");
+    $("#result-meta").innerHTML = "";
+    var strong = document.createElement("strong");
+    strong.textContent = state.items.length + " 部";
+    $("#result-meta").appendChild(document.createTextNode("“" + state.q + "” · 已加载 "));
+    $("#result-meta").appendChild(strong);
+    $("#result-meta").appendChild(document.createTextNode("相关短剧"));
+    $("#more-wrap").classList.toggle("hidden", !state.cursor);
+  }
+
+  async function runSearch(query, more) {
+    query = (query || "").trim();
+    if (!query) { $("#q").focus(); return; }
+    if (state.searching) return;
+    state.searching = true;
+    state.q = query;
+    $("#q").value = query;
+    $("#search-btn").disabled = true;
+    if (!more) {
+      state.items = [];
+      state.cursor = null;
+      $("#empty").classList.add("hidden");
+      $("#results").classList.add("hidden");
+      showLoading(true);
+    } else {
+      $("#more").disabled = true;
+      $("#more").textContent = "正在加载…";
+    }
+    try {
+      var path = "/app/search/page?q=" + encodeURIComponent(query);
+      if (more && state.cursor) path += "&cursor=" + encodeURIComponent(state.cursor);
+      var value = await api(path);
+      var items = (value && value.results) || [];
+      var added = items.length;
+      if (more) {
+        var known = {};
+        state.items.forEach(function (item) { known[item.series_id] = true; });
+        items = items.filter(function (item) { return !known[item.series_id]; });
+        state.items = state.items.concat(items);
+        added = items.length;
+      } else {
+        state.items = items;
+      }
+      state.cursor = (value && value.next_cursor) || null;
+      if (more && !added) {
+        state.cursor = null;
+        showToast("没有更多结果了");
+      }
+      if (!more) remember(query);
+      renderChips();
+      renderResults();
+      if (!state.items.length) {
+        showToast("没有搜到相关短剧，换个关键词试试");
+      }
+      setBanner("");
+    } catch (error) {
+      if (error && error.status === 503) {
+        ready = false;
+        setBanner("红果 App 的本地后端没有启动，正在等待…", true);
+        waitForBackend();
+      } else {
+        showToast("搜索失败：" + (error.message || "未知错误"));
+        if (!more) { $("#empty").classList.remove("hidden"); }
+      }
+    } finally {
+      state.searching = false;
+      $("#search-btn").disabled = false;
+      showLoading(false);
+      $("#more").disabled = false;
+      $("#more").textContent = "加载更多";
+      if (!state.cursor) $("#more-wrap").classList.add("hidden");
+    }
+  }
+
+  function tag(text) {
+    var span = document.createElement("span");
+    span.className = "tag";
+    span.textContent = text;
+    return span;
+  }
+
+  async function openSeries(item) {
+    state.current = item;
+    state.episodes = [];
+    state.episode = 1;
+    state.faved = false;
+
+    $("#p-title").textContent = item.title || "";
+    $("#p-intro").textContent = item.intro || "暂无简介";
+    var tags = $("#p-tags");
+    tags.textContent = "";
+    (item.cover_tags || item.tags || []).slice(0, 8).forEach(function (text) { tags.appendChild(tag(text)); });
+    if (item.episode_cnt) tags.appendChild(tag("全 " + item.episode_cnt + " 集"));
+
+    var fav = $("#p-fav");
+    fav.classList.remove("faved");
+    fav.disabled = false;
+    fav.textContent = "加入 App 收藏";
+
+    $("#episodes").textContent = "";
+    $("#p-count").textContent = "";
+    $("#player").classList.remove("hidden");
+    document.body.style.overflow = "hidden";
+    setVideoStatus("正在获取剧集…");
+
+    var episodes = [];
+    try {
+      var value = await api("/app/episodes?series_id=" + encodeURIComponent(item.series_id));
+      episodes = (value && value.episodes) || [];
+    } catch (error) {
+      try {
+        var fallback = await api("/app/play?series_id=" + encodeURIComponent(item.series_id) + "&ep=1");
+        episodes = (fallback && fallback.episodes) || [];
+      } catch (ignored) { /* handled below */ }
+    }
+
+    if (!episodes.length) {
+      episodes = [{ index: 1 }];
+      setVideoStatus("没有取到剧集列表，尝试直接播放第 1 集…");
+    }
+    state.episodes = episodes;
+    renderEpisodes();
+    playEpisode(episodes[0].index);
+  }
+
+  function closePlayer() {
+    $("#player").classList.add("hidden");
+    document.body.style.overflow = "";
+    var video = $("#video");
+    video.pause();
+    video.removeAttribute("src");
+    video.load();
+    state.current = null;
+  }
+
+  function setVideoStatus(text, bad, link) {
+    var box = $("#video-status");
+    box.textContent = "";
+    if (!text) { box.classList.add("hidden"); return; }
+    box.classList.remove("hidden");
+    box.classList.toggle("bad", !!bad);
+    box.appendChild(document.createTextNode(text + " "));
+    if (link) {
+      var anchor = document.createElement("a");
+      anchor.href = link;
+      anchor.target = "_blank";
+      anchor.rel = "noreferrer";
+      anchor.textContent = "在新窗口打开";
+      box.appendChild(anchor);
+    }
+  }
+
+  function renderEpisodes() {
+    var box = $("#episodes");
+    box.textContent = "";
+    $("#p-count").textContent = "共 " + state.episodes.length + " 集";
+    state.episodes.forEach(function (episode) {
+      var button = document.createElement("button");
+      button.type = "button";
+      button.className = "ep";
+      button.textContent = episode.index;
+      button.title = episode.title || ("第 " + episode.index + " 集");
+      button.addEventListener("click", function () { playEpisode(episode.index); });
+      box.appendChild(button);
+    });
+    markEpisode();
+  }
+
+  function markEpisode() {
+    Array.prototype.forEach.call($("#episodes").children, function (button) {
+      button.classList.toggle("active", String(button.textContent) === String(state.episode));
+    });
+  }
+
+  function playEpisode(index) {
+    var episode = null;
+    state.episodes.forEach(function (item) { if (String(item.index) === String(index)) episode = item; });
+    if (!episode) episode = state.episodes[0];
+    if (!episode || !state.current) return;
+    state.episode = episode.index;
+    markEpisode();
+
+    var source;
+    if (episode.vid) {
+      source = "/app/stream?vid=" + encodeURIComponent(episode.vid);
+    } else {
+      source = "/app/stream?series_id=" + encodeURIComponent(state.current.series_id) + "&ep=" + encodeURIComponent(episode.index);
+    }
+    var video = $("#video");
+    setVideoStatus("正在准备第 " + episode.index + " 集，首次播放需要解密缓存…");
+    video.src = source;
+    var playing = video.play();
+    if (playing && playing.catch) playing.catch(function () { /* needs user gesture */ });
+  }
+
+  function addFavorite(item) {
+    return api("/favorite", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        seriesId: item.series_id,
+        title: item.title,
+        cover: item.cover,
+        intro: item.intro,
+        episodeCount: item.episode_cnt,
+        tags: item.tags || []
+      })
+    }).then(function () {
+      state.faved = true;
+      var fav = $("#p-fav");
+      fav.classList.add("faved");
+      fav.textContent = "已加入 App 收藏";
+      showToast("已加入红果 App 收藏。重启 App 后可在「收藏」页看到。", "重启 App 生效", restartApp);
+      return true;
+    }).catch(function (error) {
+      showToast("收藏失败：" + (error.message || "未知错误"));
+      throw error;
+    });
+  }
+
+  async function restartApp() {
+    if (!confirm("重启红果 App 以刷新收藏？当前播放会中断。")) return;
+    setBanner("正在重启红果 App…");
+    try {
+      await fetch("/restart-app", { method: "POST" });
+    } catch (error) { /* the app may go down before replying */ }
+    var wentDown = false;
+    for (var attempt = 0; attempt < 30; attempt++) {
+      await sleep(700);
+      try {
+        var value = await api("/app-ready");
+        if (!value || !value.ready) wentDown = true;
+        if (wentDown && value && value.ready) {
+          setBanner("");
+          showToast("App 已重启，打开「收藏」页即可看到刚加入的短剧");
+          return;
+        }
+      } catch (error) {
+        wentDown = true;
+      }
+    }
+    setBanner("App 重启较慢，请稍后手动打开「红果短剧 增强版」", true);
+  }
+
+  var video = $("#video");
+  video.addEventListener("waiting", function () { setVideoStatus("缓冲中…"); });
+  video.addEventListener("canplay", function () { setVideoStatus(""); });
+  video.addEventListener("playing", function () { setVideoStatus(""); });
+  video.addEventListener("error", function () {
+    setVideoStatus("这一集暂时播放失败，可以换一集或稍后重试。", true, video.src);
+  });
+  video.addEventListener("stalled", function () { setVideoStatus("缓冲中…"); });
+
+  $("#p-fav").addEventListener("click", function () {
+    if (!state.current || state.faved) return;
+    var button = $("#p-fav");
+    button.disabled = true;
+    addFavorite(state.current).finally(function () { button.disabled = false; });
+  });
+
+  $("#search-form").addEventListener("submit", function (event) {
+    event.preventDefault();
+    runSearch($("#q").value, false);
+  });
+
+  $("#more").addEventListener("click", function () { runSearch(state.q, true); });
+
+  $("#open-app").addEventListener("click", function () {
+    fetch("/open-app", { method: "POST" }).then(function () {
+      showToast("已打开红果 App");
+    }).catch(function () {
+      showToast("无法打开 App，请从启动台打开「红果短剧 增强版」");
+    });
+  });
+
+  Array.prototype.forEach.call(document.querySelectorAll("[data-close]"), function (element) {
+    element.addEventListener("click", closePlayer);
+  });
+  document.addEventListener("keydown", function (event) {
+    if (event.key === "Escape" && !$("#player").classList.contains("hidden")) closePlayer();
+  });
+
+  renderChips();
+  waitForBackend();
+
+  var initial = new URLSearchParams(location.search).get("q");
+  if (initial) {
+    $("#q").value = initial;
+    runSearch(initial, false);
+  } else {
+    $("#q").focus();
+  }
+})();
+</script>
+</body>
+</html>
