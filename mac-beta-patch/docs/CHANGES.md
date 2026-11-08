@@ -43,6 +43,11 @@
 
 - 移除为定位搜索问题临时加在 `desktop_bootstrap.py` 的 `search_watch` 中间件（不再写 `/tmp/hg_beta/api_watch.log`）。
 
+## 6. 安装脚本验证
+
+- 从 `mac-v1.0.9-beta.2` DMG 复制一份干净 App，在 `--no-start` 模式下运行 `install.sh`：后端文件与 `third_party/phone-account-protocol` 复制正确，补丁模块可导入，`红果搜片.app` 生成并通过 ad-hoc 签名。
+- 本机实装验证：搜索、加载更多、网页播放、写入收藏、App 内 78 集播放与切集均通过（见上文）。
+
 ## 未改动 / 已知限制
 
 - App 内置搜索框仍然不可用。
