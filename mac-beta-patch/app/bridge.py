@@ -296,6 +296,42 @@ def backend_endpoint() -> tuple[int, str]:
     return port, key
 
 
+# Next-episode prefetch. The backend /stream endpoint downloads + decrypts +
+# (with HONGGUO_SESSION_API_KEY set) fully transcodes an episode inline before
+# answering, so a cold next episode often outlasts the player's auto-advance
+# wait. Warming the next episode in the background with a 1-byte Range request
+# makes the player's switch instant; the backend's _dec_lock dedups overlaps.
+_WARMED: set[str] = set()
+_WARMED_LOCK = threading.Lock()
+
+
+def _warm_stream(base: str, key: str, vid: str) -> None:
+    with _WARMED_LOCK:
+        if vid in _WARMED:
+            return
+        _WARMED.add(vid)
+
+    def warm_once() -> None:
+        url = base + "/stream?vid=" + urllib.parse.quote(str(vid)) + "&api_key=" + urllib.parse.quote(key)
+        request = urllib.request.Request(url, headers={"Range": "bytes=0-0"})
+        with urllib.request.urlopen(request, timeout=420) as response:
+            response.read(16)
+
+    def warm_worker() -> None:
+        for attempt in (0, 1):
+            try:
+                warm_once()
+                return
+            except Exception:
+                if attempt == 0:
+                    time.sleep(30)
+        # Both attempts failed; allow a later playback request to retry.
+        with _WARMED_LOCK:
+            _WARMED.discard(vid)
+
+    threading.Thread(target=warm_worker, daemon=True).start()
+
+
 def resolve_playback(params: dict) -> dict:
     series_id = params.get("series_id") or params.get("seriesId") or params.get("id") or ""
     episode = params.get("episode") or params.get("ep") or params.get("index") or "1"
@@ -339,13 +375,16 @@ def resolve_playback(params: dict) -> dict:
         listing = {}
     episodes = listing.get("episodes") or []
     chosen = None
+    chosen_pos = -1
     want = str(episode)
-    for item in episodes:
+    for pos, item in enumerate(episodes):
         if str(item.get("index")) == want:
             chosen = item
+            chosen_pos = pos
             break
     if chosen is None and episodes:
         chosen = episodes[0]
+        chosen_pos = 0
     want_index = chosen.get("index") if chosen else (episode if str(episode).isdigit() else 1)
     try:
         value = get_json("/play", {"series_id": str(series_id), "ep": str(want_index)})
@@ -364,6 +403,9 @@ def resolve_playback(params: dict) -> dict:
         return {"error": "episode unavailable", "title": value.get("title") or ""}
     stream = base + stream_path + "&api_key=" + urllib.parse.quote(key)
     total = len(episodes) or len(played)
+    next_item = episodes[chosen_pos + 1] if 0 <= chosen_pos + 1 < len(episodes) else None
+    if next_item and next_item.get("vid"):
+        _warm_stream(base, key, str(next_item["vid"]))
     return {
         "url": stream,
         "stream_url": stream,
