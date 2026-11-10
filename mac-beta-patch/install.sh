@@ -88,9 +88,25 @@ codesign --force --deep --sign - "$SEARCH_APP" >/dev/null 2>&1 || true
 echo "已创建 $SEARCH_APP"
 
 if [ "$NO_START" -eq 0 ]; then
+  # Supervise the bridge with launchd (user agent, no sudo): KeepAlive restarts
+  # it within seconds if anything kills it, so the app never sees a dead bridge.
+  AGENT_LABEL="cn.guoban.hongguo-bridge"
+  mkdir -p "$HOME/Library/LaunchAgents"
+  sed "s|@STATE@|$STATE|g" "$ROOT/bin/cn.guoban.hongguo-bridge.plist.in" \
+    > "$HOME/Library/LaunchAgents/$AGENT_LABEL.plist"
+  UID_N="$(id -u)"
+  launchctl bootout "gui/$UID_N/$AGENT_LABEL" >/dev/null 2>&1 || true
   pkill -f "bridge.py --port 8787" >/dev/null 2>&1 || true
   sleep 0.5
-  bash "$STATE/bin/launch.sh" >/dev/null 2>&1 || true
+  if launchctl bootstrap "gui/$UID_N" "$HOME/Library/LaunchAgents/$AGENT_LABEL.plist" >/dev/null 2>&1 \
+    || launchctl load -w "$HOME/Library/LaunchAgents/$AGENT_LABEL.plist" >/dev/null 2>&1; then
+    echo "桥接已交给 launchd 守护（异常退出 5 秒内自动拉起）。"
+  else
+    echo "launchd 注册失败，回退为 launch.sh 直接启动。" >&2
+    bash "$STATE/bin/launch.sh" >/dev/null 2>&1 || true
+  fi
+else
+  echo "--no-start：未注册 launchd 守护（安装后手动运行 install.sh 或 launch.sh）。"
 fi
 
 echo

@@ -82,7 +82,20 @@ axsearch / axconfirm，见其 README）：不抢焦点，可在用户使用其�
 novelfm 响应模式调试开关、以及最终方案用不上的 TLS 监听（:8888）；
 最终桥接只保留 8787 纯 HTTP 一条通道。
 
-## 6. 清理
+## 6. 桥接守护与日志（2026-11-10）
+
+- 排查「发现片单暂时加载失败」复发：桥接进程被外部静默杀死（日志无
+  traceback），App 重启后连不上 8787，片单请求直接失败。
+- 修复：`bin/cn.guoban.hongguo-bridge.plist.in` + `install.sh` 注册用户级
+  LaunchAgent（`~/Library/LaunchAgents/cn.guoban.hongguo-bridge.plist`，
+  KeepAlive + ThrottleInterval 5s），桥接异常退出 5 秒内自动拉起；已验证
+  kill 后自动恢复。`--no-start` 模式不注册。
+- `bridge.py` 日志加时间戳，启动行带 pid，便于下次定位。
+- 注意：直接从 Dock 启动 红果免费短剧.app 会缺 `HONGGUO_DESKTOP_*`
+  环境变量（App 内播放接口可能受影响）；应从 红果搜片（其 launcher 调
+  launch.sh）或 `/restart-app` 启动。
+
+## 7. 清理
 
 - 移除为定位搜索问题临时加在 `desktop_bootstrap.py` 的 `search_watch` 中间件（不再写 `/tmp/hg_beta/api_watch.log`）。
 

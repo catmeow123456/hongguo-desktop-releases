@@ -424,7 +424,8 @@ class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
     def log_message(self, fmt, *args):
-        sys.stderr.write("[bridge] " + (fmt % args) + "\n")
+        stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        sys.stderr.write(f"[bridge {stamp}] " + (fmt % args) + "\n")
 
     def send_json(self, value, status=200):
         body = json_bytes(value)
@@ -916,7 +917,8 @@ def main():
         raise SystemExit("invalid port")
     server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
     server.daemon_threads = True
-    print(f"[bridge] listening on http://127.0.0.1:{args.port}", flush=True)
+    print(f"[bridge {time.strftime('%Y-%m-%d %H:%M:%S')}] listening on "
+          f"http://127.0.0.1:{args.port} (pid {os.getpid()})", flush=True)
     server.serve_forever()
 
 
