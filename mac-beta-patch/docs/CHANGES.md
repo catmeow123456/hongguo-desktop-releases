@@ -95,11 +95,30 @@ novelfm 响应模式调试开关、以及最终方案用不上的 TLS 监听（:
   环境变量（App 内播放接口可能受影响）；应从 红果搜片（其 launcher 调
   launch.sh）或 `/restart-app` 启动。
 
-## 7. 清理
+## 7. 发现片单韧性重构（2026-11-10）
+
+「发现片单暂时加载失败」toast 复发的根因不止桥接被杀一个：
+
+- App 重启时捆绑后端一起重启，启动初期的片单请求落在未就绪的后端上，
+  `rank_items()` 拿到空数据，桥接仍返回 200 + **0 张卡片**，App 解析空列表
+  即弹 toast。现在 `backend_get_retry()` 短重试一次。
+- 上游 `category/landpage` 分类接口已死（返回非 JSON），`/browse` 的
+  short_play / ai_series 两块榜单永远为空——这两个 slug 在二进制里是
+  编译死的，App 请求必失败。已把 4 个 slug 全部重映射到健康的
+  `/rank?board=recommend|hot|new`。
+- `rank_page()` 重写为 stale-while-revalidate：新鲜缓存直接秒回；过期缓存
+  先回后由后台线程刷新；无缓存才同步抓取并落盘
+  （`$STATE/cache/rank-<slug>.html`，TTL 600s）。桥接启动 15s 后还会预热
+  全部 slug。效果：App 的片单请求永远立即拿到有内容的页面，任何
+  桥接/后端/上游故障都不再产生空列表。
+
+验证：4 个 slug 均 200 且含卡片；二次请求 2–7ms（缓存命中）。
+
+## 8. 清理
 
 - 移除为定位搜索问题临时加在 `desktop_bootstrap.py` 的 `search_watch` 中间件（不再写 `/tmp/hg_beta/api_watch.log`）。
 
-## 7. 安装脚本验证
+## 9. 安装脚本验证
 
 - 从 `mac-v1.0.9-beta.2` DMG 复制一份干净 App，在 `--no-start` 模式下运行 `install.sh`：后端文件与 `third_party/phone-account-protocol` 复制正确，补丁模块可导入，`红果搜片.app` 生成并通过 ad-hoc 签名。
 - 本机实装验证：搜索、加载更多、网页播放、写入收藏、App 内 78 集播放与切集均通过（见上文）。

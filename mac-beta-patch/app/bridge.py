@@ -773,20 +773,41 @@ def novelfm_payload(params: dict) -> dict:
     return value
 
 
+# The app's four compiled-in rank slugs. The backend's /browse genre boards
+# (short_play / ai_series) are dead upstream — the category/landpage API now
+# returns non-JSON — so those two slugs are remapped onto the healthy /rank
+# boards (recommend|hot|new) to keep every tab populated.
 RANK_PAGES = {
     "hot-drama": ("hot", "热门短剧榜"),
-    "hot-comic-drama": ("recommend", "热门漫剧榜"),
-    "hot-real-drama": ("browse:short_play", "热门真人短剧榜"),
-    "hot-ai-drama": ("browse:ai_series", "热门AI短剧榜"),
+    "hot-comic-drama": ("recommend", "漫剧推荐榜"),
+    "hot-real-drama": ("new", "新剧榜"),
+    "hot-ai-drama": ("recommend", "漫剧推荐榜"),
 }
+
+
+def backend_get_retry(path_qs: str, timeout=40, attempts=2, delay=1.5):
+    """backend_get with a short retry. The app's bundled backend restarts
+    together with the app, so requests that land in the first seconds after a
+    relaunch hit a not-yet-listening backend; one quick retry rescues most."""
+    for attempt in range(attempts):
+        payload = backend_get(path_qs, timeout=timeout)
+        if payload:
+            return payload
+        if attempt + 1 < attempts:
+            time.sleep(delay)
+    return None
+
+
+RANK_CACHE_DIR = STATE_DIR / "cache"
+RANK_TTL = 600  # seconds a cached rank page is served as-is before a refresh
 
 
 def rank_items(slug: str):
     board, title = RANK_PAGES.get(slug, ("hot", "热门短剧榜"))
     if board.startswith("browse:"):
-        payload = backend_get("/browse?genre=" + board.split(":", 1)[1] + "&limit=60") or {}
+        payload = backend_get_retry("/browse?genre=" + board.split(":", 1)[1] + "&limit=60") or {}
     else:
-        payload = backend_get("/rank?board=" + board + "&limit=60") or {}
+        payload = backend_get_retry("/rank?board=" + board + "&limit=60") or {}
     rows = payload.get("items") or []
     items = []
     for row in rows[:60]:
@@ -808,8 +829,7 @@ def escape_html(value) -> str:
     return html.escape(str(value), quote=True)
 
 
-def rank_page(slug: str) -> bytes:
-    title, items = rank_items(slug)
+def render_rank_page(slug: str, title: str, items: list) -> bytes:
     cards = []
     for idx, item in enumerate(items):
         hot = item["hot"]
@@ -840,8 +860,57 @@ def rank_page(slug: str) -> bytes:
     return body.encode("utf-8")
 
 
+def rank_page(slug: str) -> bytes:
+    """Stale-while-revalidate rank serving. The app's rank client has a short
+    timeout and shows the 发现片单 toast on any empty/late/parse-failed reply,
+    so: fresh cache → serve instantly; stale cache → serve it and refresh in
+    the background; no cache → synchronous fetch. A populated page is always
+    preferred over a live one."""
+    stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+    cache_path = RANK_CACHE_DIR / ("rank-" + slug + ".html")
+    cached = b""
+    try:
+        cached = cache_path.read_bytes()
+    except Exception:
+        pass
+    if cached:
+        try:
+            fresh = (time.time() - cache_path.stat().st_mtime) < RANK_TTL
+        except Exception:
+            fresh = False
+        if fresh:
+            return cached
+
+        def refresh():
+            try:
+                title, items = rank_items(slug)
+                if items:
+                    RANK_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+                    cache_path.write_bytes(render_rank_page(slug, title, items))
+            except Exception:
+                pass
+
+        threading.Thread(target=refresh, daemon=True).start()
+        print(f"[bridge {stamp}] rank {slug}: serving stale cache, refreshing", flush=True)
+        return cached
+    try:
+        title, items = rank_items(slug)
+    except Exception:
+        title, items = "", []
+    if items:
+        body = render_rank_page(slug, title, items)
+        try:
+            RANK_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            cache_path.write_bytes(body)
+        except Exception:
+            pass
+        return body
+    print(f"[bridge {stamp}] rank {slug}: backend empty and no cache yet", flush=True)
+    return render_rank_page(slug, title or "热门短剧榜", items)
+
+
 def detail_page(series_id: str) -> bytes:
-    payload = backend_get("/episodes?series_id=" + urllib.parse.quote(str(series_id))) or {}
+    payload = backend_get_retry("/episodes?series_id=" + urllib.parse.quote(str(series_id))) or {}
     meta = payload.get("meta") or {}
     eps = payload.get("episodes") or []
     count = len(eps) or int(meta.get("episode_cnt") or 0)
@@ -910,6 +979,21 @@ def main():
     ACCOUNT = load_account()
     if ACCOUNT:
         print("[bridge] restored saved account: " + ACCOUNT["name"], flush=True)
+
+    def warm_rank_cache():
+        # Seed the rank disk cache so the very first app relaunch after
+        # installing already has last-good pages to fall back on.
+        time.sleep(15)
+        port, _ = backend_endpoint()
+        if not port:
+            return
+        for slug in RANK_PAGES:
+            try:
+                rank_page(slug)
+            except Exception:
+                pass
+
+    threading.Thread(target=warm_rank_cache, daemon=True).start()
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, default=8787)
     args = parser.parse_args()
