@@ -8,7 +8,31 @@ Failures are never retried automatically and no identity is persisted.
 import json
 import re
 import sys
+import time
 from pathlib import Path
+
+# 2026-11-24: upstream answers the old anonymous media route with empty
+# bodies, and every fetch_batch call re-registers a throwaway device first.
+# After one failure in that shape, skip the doomed route for 10 minutes and
+# go straight to the V5 reader (the raised error matches its entry gate).
+# One request per TTL re-probes the old route in case upstream revives it.
+_OLD_ROUTE_DEAD_UNTIL = 0.0
+_OLD_ROUTE_TTL = 600.0
+
+
+def fetch_models_with_skip(videos):
+    global _OLD_ROUTE_DEAD_UNTIL
+    from desktop_spare_player import SpareError
+    if time.monotonic() < _OLD_ROUTE_DEAD_UNTIL:
+        print("[fresh] old media route skipped (recently empty)", file=sys.stderr, flush=True)
+        raise SpareError("empty-response")
+    from desktop_fresh_playback import fetch_batch
+    try:
+        return fetch_batch(videos)
+    except Exception as error:
+        if getattr(error, "reason", None) in ("empty-response", "invalid-model"):
+            _OLD_ROUTE_DEAD_UNTIL = time.monotonic() + _OLD_ROUTE_TTL
+        raise
 
 ROOT = Path(__file__).resolve().parent
 PROTO = ROOT / "phone-account-protocol"
@@ -54,9 +78,8 @@ def install(client):
             videos, single = _videos(path, body)
             if not videos:
                 raise
-            from desktop_fresh_playback import fetch_batch
             try:
-                models = fetch_batch(videos)
+                models = fetch_models_with_skip(videos)
             except Exception as fallback_error:
                 # 2026-11-23: upstream returns an empty body for the old
                 # anonymous media route; SDK V5 (Windows 1.0.138 port) is the

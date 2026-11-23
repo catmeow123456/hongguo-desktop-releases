@@ -331,6 +331,9 @@ def backend_endpoint() -> tuple[int, str]:
                     key = token.split("=", 1)[1]
             if not pid.isdigit():
                 continue
+            if int(pid) != BACKEND.get("pid"):
+                BACKEND["pid"] = int(pid)
+                BACKEND["boot"] = now  # app restart: backend is warming up
             listen = subprocess.run(
                 ["lsof", "-nP", "-a", "-p", pid, "-iTCP", "-sTCP:LISTEN"],
                 capture_output=True, text=True, timeout=5,
@@ -397,6 +400,49 @@ STREAM_CACHE_MAX_GB = float(os.environ.get("HONGGUO_STREAM_CACHE_MAX_GB", "8"))
 STREAM_CACHE_MAX_AGE = 30 * 86400
 STREAM_CACHE_INTERVAL = 1800
 STREAM_CACHE_PROTECT = 1800  # never evict episodes used in the last 30 min
+
+# Playback-v5 state lives next to the stream cache in the backend data dir.
+# Both registrations are one-shot by design: a network failure during the
+# anonymous device registration or an interrupted SDK save leaves a durable
+# marker that blocks playback until it is cleared by hand. /v5-reset clears
+# exactly those markers so the next playback can re-register; the AES key
+# (playback-v5.key) and the verified SDK materials (playback-sdk/) are kept.
+V5_DATA_DIR = STREAM_CACHE_DIR.parent
+V5_STATE_FILES = (
+    "playback-spare.dpapi", "playback-spare.attempt.json",
+    "playback-spare.registration.pending", "playback-spare.registration.lock",
+    "playback-spare.previous-attempt.json", "playback-spare.lock",
+    "playback-sdk-v5.dpapi", "playback-sdk-v5-attempt.json",
+    "playback-sdk-v5-pending.dpapi", "playback-sdk-v5-pending.tmp",
+    "playback-sdk-v5-continue.json", "playback-sdk-v5.lock",
+    "playback-sdk-v5.tmp", "playback-sdk-v5-recovery.dpapi",
+    "playback-sdk-v5-recovery.tmp", "playback-v5-diagnostic.json",
+)
+
+
+def reset_v5_state() -> list:
+    removed = []
+    for name in V5_STATE_FILES:
+        path = V5_DATA_DIR / name
+        try:
+            if path.is_symlink() or not path.is_file():
+                continue
+            path.unlink()
+            removed.append(name)
+        except OSError:
+            pass
+    return removed
+
+
+def spawn_app_restart() -> bool:
+    script = ("sleep 0.4; pkill -f hongguo-desktop-companion >/dev/null 2>&1; "
+              "sleep 2; exec " + shlex.quote(str(LAUNCHER)) + " >/dev/null 2>&1")
+    try:
+        subprocess.Popen(["/bin/sh", "-c", script], stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, start_new_session=True)
+        return True
+    except Exception:
+        return False
 
 
 def stream_cache_files(vid: str):
@@ -491,15 +537,19 @@ def resolve_playback(params: dict) -> dict:
     if not series_id and not vid:
         return {"error": "missing series_id"}
     series_id = resolve_rank_index(str(series_id), str(episode))
-    port, key = backend_endpoint()
-    if not port:
+    if not backend_endpoint()[0]:
         return {"error": "backend unavailable"}
-    base = f"http://127.0.0.1:{port}"
 
     def get_json(target_path, query, timeout=60):
+        # Resolve the endpoint per call: the app (and its backend) can
+        # restart mid-request, which leaves the 3s endpoint cache pointing
+        # at a dead port.
+        port, key = backend_endpoint()
+        if not port:
+            raise ConnectionError("backend unavailable")
         query = dict(query)
         query["api_key"] = key
-        url = base + target_path + "?" + urllib.parse.urlencode(query)
+        url = f"http://127.0.0.1:{port}" + target_path + "?" + urllib.parse.urlencode(query)
         with urllib.request.urlopen(url, timeout=timeout) as response:
             return json.loads(response.read(4 * 1024 * 1024))
 
@@ -522,10 +572,16 @@ def resolve_playback(params: dict) -> dict:
 
     # Episode count comes from /episodes; /play with ep=1 only ever returns that
     # one episode and makes the app believe the series is a single episode.
-    try:
-        listing = get_json("/episodes", {"series_id": str(series_id)}, timeout=30)
-    except Exception:
-        listing = {}
+    listing = {}
+    for _ in range(2):
+        try:
+            listing = get_json("/episodes", {"series_id": str(series_id)}, timeout=30)
+            break
+        except Exception:
+            if time.time() - BACKEND.get("boot", 0) >= 45:
+                break
+            BACKEND["checked"] = 0
+            time.sleep(3)
     episodes = listing.get("episodes") or []
     chosen = None
     chosen_pos = -1
@@ -539,9 +595,28 @@ def resolve_playback(params: dict) -> dict:
         chosen = episodes[0]
         chosen_pos = 0
     want_index = chosen.get("index") if chosen else (episode if str(episode).isdigit() else 1)
-    try:
-        value = get_json("/play", {"series_id": str(series_id), "ep": str(want_index)})
-    except Exception as exc:
+    # The app's first playback after a restart can land while the freshly
+    # spawned backend is still warming up, and the endpoint cache may still
+    # point at the port of the killed previous backend. Retry with fresh
+    # endpoint discovery until the boot window closes; outside the window a
+    # transport failure still gets one rediscovery attempt.
+    value = None
+    exc = None
+    deadline = time.time() + 25
+    while True:
+        try:
+            value = get_json("/play", {"series_id": str(series_id), "ep": str(want_index)})
+            break
+        except Exception as error:
+            exc = error
+            booting = time.time() - BACKEND.get("boot", 0) < 45
+            transport = not isinstance(error, urllib.error.HTTPError)
+            if time.time() >= deadline or not (booting or transport):
+                break
+            BACKEND["checked"] = 0  # force rediscovery of the (new) backend
+            time.sleep(3)
+    if value is None:
+        assert exc is not None
         detail = ""
         if isinstance(exc, urllib.error.HTTPError):
             try:
@@ -554,6 +629,8 @@ def resolve_playback(params: dict) -> dict:
     stream_path = str(current.get("stream_url") or "")
     if not stream_path:
         return {"error": "episode unavailable", "title": value.get("title") or ""}
+    port, key = backend_endpoint()
+    base = f"http://127.0.0.1:{port}"
     stream = base + stream_path + "&api_key=" + urllib.parse.quote(key)
     total = len(episodes) or len(played)
     next_item = episodes[chosen_pos + 1] if 0 <= chosen_pos + 1 < len(episodes) else None
@@ -726,13 +803,8 @@ class Handler(BaseHTTPRequestHandler):
         return self.send_json({"ok": True})
 
     def restart_app(self):
-        script = ("sleep 0.4; pkill -f hongguo-desktop-companion >/dev/null 2>&1; "
-                  "sleep 2; exec " + shlex.quote(str(LAUNCHER)) + " >/dev/null 2>&1")
-        try:
-            subprocess.Popen(["/bin/sh", "-c", script], stdout=subprocess.DEVNULL,
-                             stderr=subprocess.DEVNULL, start_new_session=True)
-        except Exception as exc:
-            return self.send_json({"error": type(exc).__name__}, 500)
+        if not spawn_app_restart():
+            return self.send_json({"error": "spawn failed"}, 500)
         return self.send_json({"ok": True})
 
     def handle_one_request(self):
@@ -764,6 +836,14 @@ class Handler(BaseHTTPRequestHandler):
             return self.restart_app()
         if path == "/autologin":
             return self.send_json({"ok": autologin_current("api")})
+        if path == "/v5-reset" and self.command == "POST":
+            removed = reset_v5_state()
+            payload = {"ok": True, "removed": removed}
+            if str(params.get("restart") or "").lower() in ("1", "true", "yes"):
+                payload["restarting"] = spawn_app_restart()
+            else:
+                payload["note"] = "restart the app to reload the backend (POST /v5-reset?restart=1)"
+            return self.send_json(payload)
         if path == "/app" or path.startswith("/app/"):
             return self.proxy_backend(path[4:] or "/", parsed.query,
                                       "HEAD" if self.command == "HEAD" else "GET")
