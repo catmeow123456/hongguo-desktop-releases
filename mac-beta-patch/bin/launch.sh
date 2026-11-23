@@ -30,6 +30,9 @@ else
   export HONGGUO_DESKTOP_AUTH_BASE_URL=http://127.0.0.1:8787
   export HONGGUO_DESKTOP_AUTH_CLIENT_ID=test-client
   export HONGGUO_DESKTOP_PLAYBACK_PATH=/playback
+  # Upstream now signature-checks the list/category APIs; the backend only
+  # signs them with this flag (otherwise /browse returns "not JSON").
+  export HG_SIGN_LIST=1
   nohup "$BIN" >>"$STATE/app.log" 2>&1 &
   for _ in $(seq 1 40); do
     pgrep -f "$BIN$" >/dev/null 2>&1 && break
@@ -37,5 +40,8 @@ else
   done
 fi
 
-nohup /usr/bin/osascript -l JavaScript "$STATE/bin/autologin.js" >>"$STATE/autologin.log" 2>&1 &
+# Login restore is owned by the bridge (it also covers Dock/Finder launches
+# via its app watcher); only run the script directly if the bridge is down.
+curl -fsS --max-time 2 -X POST http://127.0.0.1:8787/autologin >/dev/null 2>&1 \
+  || nohup /usr/bin/osascript -l JavaScript "$STATE/bin/autologin.js" >>"$STATE/autologin.log" 2>&1 &
 exit 0

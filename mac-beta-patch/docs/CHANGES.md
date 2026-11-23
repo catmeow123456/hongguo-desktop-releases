@@ -114,11 +114,40 @@ novelfm 响应模式调试开关、以及最终方案用不上的 TLS 监听（:
 
 验证：4 个 slug 均 200 且含卡片；二次请求 2–7ms（缓存命中）。
 
-## 8. 清理
+- 2026-11-23 起此注意事项已失效：见第 8 节，Dock/Finder 直启也可用。
+
+## 8. Dock 直启、签名列表与缓存清理（2026-11-23）
+
+- **Dock/Finder 直接启动**：`install.sh` 向 App 的 `Info.plist` 注入
+  `LSEnvironment`（与 `launch.sh` 导出的同一组变量），LaunchServices 会在
+  从 Dock/Finder/`open` 启动时应用；原 plist 备份在
+  `$STATE/backup/Info.plist.orig`。桥接新增 `watch_app()` 线程（每 3s 轮询
+  App pid），出现新进程即自动跑一次 `autologin.js`，并暴露
+  `POST /autologin`。已用 `open -b cn.guoban.desktop-companion` 验证：
+  环境变量到位、自动登录成功。
+- **签名列表请求**：第 7 节「`/browse` 分类接口已死」的判断有误。真实
+  原因是上游开始校验分类/榜单接口的签名，而后端只在 `HG_SIGN_LIST=1`
+  时才对这些请求签名（否则报 "Upstream did not return JSON"）。已在
+  `launch.sh`、`install.sh`（新装 + 旧装补键）和已安装的 plist 中加入该
+  变量。实测 short_play / ai_series 返回真实数据。
+- **榜单重新映射**：`hot-real-drama` → `/browse?genre=short_play`、
+  `hot-ai-drama` → `/browse?genre=ai_series`（按 hot_score），失败时回退到
+  `/rank` 的 new / recommend；`hot-drama`、`hot-comic-drama` 不变。实测
+  真人榜、AI 榜均为对应类型的剧集；缓存命中 4–5ms。
+- **流缓存 LRU**：本机文件系统不维护 atime，桥接在每次播放时
+  `touch` 对应剧集，再按 mtime 以整集（`{vid}_*`）为单位淘汰。上限
+  `HONGGUO_STREAM_CACHE_MAX_GB`（默认 8），超过 30 天淘汰，30 分钟内用过的
+  不动，顺带清理超过 1 天的 `.partial`。桥接启动 60s 后首跑，之后每 30 分钟。
+- **移植 Windows 1.0.138 的剧集缓存校验**：`backend/hongguo.py` 与
+  `backend/desktop_episode_cache.py`（与 1.0.138 对应文件一致，仅换行符
+  不同）。`get_episodes` 命中缓存前先校验，空/坏的剧集列表不再被缓存。
+- **未移植**：1.0.138 的播放相关改动（见「已知限制」）。
+
+## 9. 清理
 
 - 移除为定位搜索问题临时加在 `desktop_bootstrap.py` 的 `search_watch` 中间件（不再写 `/tmp/hg_beta/api_watch.log`）。
 
-## 9. 安装脚本验证
+## 10. 安装脚本验证
 
 - 从 `mac-v1.0.9-beta.2` DMG 复制一份干净 App，在 `--no-start` 模式下运行 `install.sh`：后端文件与 `third_party/phone-account-protocol` 复制正确，补丁模块可导入，`红果搜片.app` 生成并通过 ad-hoc 签名。
 - 本机实装验证：搜索、加载更多、网页播放、写入收藏、App 内 78 集播放与切集均通过（见上文）。
@@ -128,4 +157,13 @@ novelfm 响应模式调试开关、以及最终方案用不上的 TLS 监听（:
 - App 内置搜索框仍然不可用（搜索客户端强制 https + 内置根证书，本地无法
   劫持；需要公网域名 + 证书中继才能打通，暂不做）。搜索请使用 红果搜片。
 - App 播放页的弹幕、评论等上游能力未逐一验证。
+- **播放当前不可用（2026-11-23 发现，上游变更）**：上游对
+  `multi_video_model` 播放接口返回 HTTP 200 + 空 body，App 的账号通道和
+  匿名备用通道（`desktop_fresh_playback`）都拿不到播放地址，最终报
+  `PLAY_FAILED / video_model`。已排除本地原因：与 11-23 的改动无关（失败点
+  不在改动的代码路径上）；IPv4/IPv6/代理三种网络路径结果一致；新注册的
+  匿名设备同样被拒。Windows 1.0.138 的解法是新增一套 SDK v5 签名栈
+  （`desktop_sdk_player_v5` + `phone_*_v5` 约 15 个模块，依赖 `unicorn`
+  模拟 arm64 原生签名库，状态文件用 Windows DPAPI 保护），Mac 后端里没有
+  这些依赖，尚未移植。最后成功播放是 11-10。
 - 依赖测试版内部文件布局；升级 App 后补丁可能需要更新。

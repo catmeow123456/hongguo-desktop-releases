@@ -62,6 +62,60 @@ LAB_PAGE = STATE_DIR / "app" / "lab.html"
 LAUNCHER = STATE_DIR / "bin" / "launch.sh"
 LIBRARY_DB = Path.home() / "Library" / "Application Support" / "cn.guoban.desktop-companion" / "guoban.sqlite3"
 ACCOUNT: dict | None = None
+APP_BIN = "/Applications/红果免费短剧.app/Contents/MacOS/hongguo-desktop-companion"
+AUTOLOGIN_JS = STATE_DIR / "bin" / "autologin.js"
+
+
+def app_pid() -> int:
+    """PID of the running 红果 app, or 0. The [n] keeps the pattern from
+    matching the pgrep command line itself."""
+    try:
+        out = subprocess.run(["pgrep", "-f", "hongguo-desktop-companio[n]$"],
+                             capture_output=True, text=True, timeout=5).stdout.split()
+    except Exception:
+        return 0
+    return int(out[0]) if out else 0
+
+
+_AUTOLOGINED: set[int] = set()
+
+
+def autologin_current(reason: str) -> bool:
+    """Restore the saved account in the running app (once per app process).
+    The app itself does not persist login, so every launch — Dock, Finder,
+    launch.sh — needs this; the bridge is always up under launchd and owns it."""
+    pid = app_pid()
+    if not pid or pid in _AUTOLOGINED:
+        return False
+    _AUTOLOGINED.add(pid)
+
+    def run():
+        stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        try:
+            with open(STATE_DIR / "autologin.log", "ab") as log:
+                subprocess.run(["/usr/bin/osascript", "-l", "JavaScript", str(AUTOLOGIN_JS)],
+                               stdout=log, stderr=log, timeout=120)
+            print(f"[bridge {stamp}] autologin finished ({reason}, pid {pid})", flush=True)
+        except Exception as exc:
+            print(f"[bridge {stamp}] autologin failed ({reason}): {type(exc).__name__}", flush=True)
+
+    threading.Thread(target=run, daemon=True).start()
+    return True
+
+
+def watch_app():
+    """Auto-login whenever a new app process appears (e.g. launched from the
+    Dock, which does not run launch.sh)."""
+    seen = app_pid()  # already running at bridge start: leave it alone
+    while True:
+        time.sleep(3)
+        pid = app_pid()
+        if pid != seen:
+            seen = pid
+            if not pid:
+                _AUTOLOGINED.clear()
+            else:
+                autologin_current("new app process")
 
 
 def load_account() -> dict | None:
@@ -332,6 +386,104 @@ def _warm_stream(base: str, key: str, vid: str) -> None:
     threading.Thread(target=warm_worker, daemon=True).start()
 
 
+# Bound the backend's stream cache. Each episode is stored as {vid}_best.mp4
+# (decrypted) plus optional transcodes; the backend never evicts, so the
+# directory grows without limit (8 GB after two weeks of use). atime is not
+# maintained on this filesystem, so resolve_playback touches the files of the
+# episode being watched and eviction goes by mtime, whole episodes at a time.
+STREAM_CACHE_DIR = (Path.home() / "Library" / "Application Support"
+                    / "cn.guoban.desktop-companion" / "stream-cache")
+STREAM_CACHE_MAX_GB = float(os.environ.get("HONGGUO_STREAM_CACHE_MAX_GB", "8"))
+STREAM_CACHE_MAX_AGE = 30 * 86400
+STREAM_CACHE_INTERVAL = 1800
+STREAM_CACHE_PROTECT = 1800  # never evict episodes used in the last 30 min
+
+
+def stream_cache_files(vid: str):
+    try:
+        return [p for p in STREAM_CACHE_DIR.glob(str(vid) + "_*") if p.is_file()]
+    except Exception:
+        return []
+
+
+def touch_stream_cache(vid: str) -> None:
+    for path in stream_cache_files(vid):
+        try:
+            os.utime(path, None)
+        except OSError:
+            pass
+
+
+def trim_stream_cache() -> dict:
+    """Evict least-recently-used whole episodes until the cache is under
+    STREAM_CACHE_MAX_GB; also drop entries older than STREAM_CACHE_MAX_AGE
+    and stale .partial downloads."""
+    now = time.time()
+    removed, freed = 0, 0
+    try:
+        entries = [p for p in STREAM_CACHE_DIR.iterdir() if p.is_file()]
+    except Exception:
+        return {"removed": 0, "freed": 0, "total": 0}
+
+    for path in entries:
+        try:
+            if path.name.endswith(".partial") and now - path.stat().st_mtime > 86400:
+                freed += path.stat().st_size
+                path.unlink()
+                removed += 1
+        except OSError:
+            pass
+
+    episodes: dict[str, dict] = {}
+    for path in entries:
+        match = re.match(r"^(\d+)_", path.name)
+        if not match:
+            continue
+        try:
+            st = path.stat()
+        except OSError:
+            continue
+        entry = episodes.setdefault(match.group(1), {"size": 0, "used": 0.0, "files": []})
+        entry["size"] += st.st_size
+        entry["used"] = max(entry["used"], st.st_atime, st.st_mtime)
+        entry["files"].append(path)
+
+    total = sum(e["size"] for e in episodes.values())
+    cap = STREAM_CACHE_MAX_GB * 1e9
+    for vid, entry in sorted(episodes.items(), key=lambda kv: kv[1]["used"]):
+        too_old = now - entry["used"] > STREAM_CACHE_MAX_AGE
+        if total <= cap and not too_old:
+            break
+        if now - entry["used"] < STREAM_CACHE_PROTECT:
+            continue
+        for path in entry["files"]:
+            try:
+                path.unlink()
+            except OSError:
+                continue
+        total -= entry["size"]
+        freed += entry["size"]
+        removed += 1
+        with _WARMED_LOCK:
+            _WARMED.discard(vid)
+    return {"removed": removed, "freed": freed, "total": total}
+
+
+def trim_stream_cache_loop():
+    time.sleep(60)
+    while True:
+        stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        try:
+            stats = trim_stream_cache()
+            if stats["removed"]:
+                print(f"[bridge {stamp}] stream cache: removed {stats['removed']} episode(s), "
+                      f"freed {stats['freed'] / 1e9:.1f} GB, now {stats['total'] / 1e9:.1f} GB "
+                      f"(cap {STREAM_CACHE_MAX_GB:g} GB)", flush=True)
+        except Exception as exc:
+            print(f"[bridge {stamp}] stream cache trim failed: {type(exc).__name__}", flush=True)
+        time.sleep(STREAM_CACHE_INTERVAL)
+
+
 def resolve_playback(params: dict) -> dict:
     series_id = params.get("series_id") or params.get("seriesId") or params.get("id") or ""
     episode = params.get("episode") or params.get("ep") or params.get("index") or "1"
@@ -406,6 +558,12 @@ def resolve_playback(params: dict) -> dict:
     next_item = episodes[chosen_pos + 1] if 0 <= chosen_pos + 1 < len(episodes) else None
     if next_item and next_item.get("vid"):
         _warm_stream(base, key, str(next_item["vid"]))
+    played_vid = str(current.get("vid") or "")
+    if not played_vid.isdigit():
+        found = re.search(r"[?&]vid=(\d+)", stream_path)
+        played_vid = found.group(1) if found else ""
+    if played_vid:
+        touch_stream_cache(played_vid)
     return {
         "url": stream,
         "stream_url": stream,
@@ -601,6 +759,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.open_app()
         if path == "/restart-app":
             return self.restart_app()
+        if path == "/autologin":
+            return self.send_json({"ok": autologin_current("api")})
         if path == "/app" or path.startswith("/app/"):
             return self.proxy_backend(path[4:] or "/", parsed.query,
                                       "HEAD" if self.command == "HEAD" else "GET")
@@ -773,15 +933,16 @@ def novelfm_payload(params: dict) -> dict:
     return value
 
 
-# The app's four compiled-in rank slugs. The backend's /browse genre boards
-# (short_play / ai_series) are dead upstream — the category/landpage API now
-# returns non-JSON — so those two slugs are remapped onto the healthy /rank
-# boards (recommend|hot|new) to keep every tab populated.
+# The app's four compiled-in rank slugs -> backend boards, page title, and a
+# fallback board. The two browse boards hit the category/landpage API, which
+# upstream now signature-checks: they only return data when the backend runs
+# with HG_SIGN_LIST=1 (launch.sh / LSEnvironment set it). If that ever fails,
+# the fallback /rank board keeps the tab populated.
 RANK_PAGES = {
-    "hot-drama": ("hot", "热门短剧榜"),
-    "hot-comic-drama": ("recommend", "漫剧推荐榜"),
-    "hot-real-drama": ("new", "新剧榜"),
-    "hot-ai-drama": ("recommend", "漫剧推荐榜"),
+    "hot-drama": ("hot", "热门短剧榜", None),
+    "hot-comic-drama": ("recommend", "漫剧推荐榜", None),
+    "hot-real-drama": ("browse:short_play", "热门真人短剧榜", "new"),
+    "hot-ai-drama": ("browse:ai_series", "热门AI短剧榜", "recommend"),
 }
 
 
@@ -802,15 +963,14 @@ RANK_CACHE_DIR = STATE_DIR / "cache"
 RANK_TTL = 600  # seconds a cached rank page is served as-is before a refresh
 
 
-def rank_items(slug: str):
-    board, title = RANK_PAGES.get(slug, ("hot", "热门短剧榜"))
+def board_items(board: str) -> list:
     if board.startswith("browse:"):
-        payload = backend_get_retry("/browse?genre=" + board.split(":", 1)[1] + "&limit=60") or {}
+        payload = backend_get_retry("/browse?genre=" + board.split(":", 1)[1] +
+                                    "&sort=hot_score&limit=60") or {}
     else:
         payload = backend_get_retry("/rank?board=" + board + "&limit=60") or {}
-    rows = payload.get("items") or []
     items = []
-    for row in rows[:60]:
+    for row in (payload.get("items") or [])[:60]:
         sid = str(row.get("series_id") or "")
         if not sid.isdigit():
             continue
@@ -822,6 +982,14 @@ def rank_items(slug: str):
             "count": int(row.get("episode_cnt") or row.get("episode_count") or 0) or 1,
             "hot": row.get("play_cnt") or 0,
         })
+    return items
+
+
+def rank_items(slug: str):
+    board, title, fallback = RANK_PAGES.get(slug, ("hot", "热门短剧榜", None))
+    items = board_items(board)
+    if not items and fallback:
+        items = board_items(fallback)
     return title, items
 
 
@@ -994,6 +1162,8 @@ def main():
                 pass
 
     threading.Thread(target=warm_rank_cache, daemon=True).start()
+    threading.Thread(target=watch_app, daemon=True).start()
+    threading.Thread(target=trim_stream_cache_loop, daemon=True).start()
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, default=8787)
     args = parser.parse_args()

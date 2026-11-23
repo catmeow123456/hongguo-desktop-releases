@@ -76,6 +76,29 @@ else
   echo "二进制补丁失败；发现片单将继续使用官网原始地址。" >&2
 fi
 
+# Let the app start straight from the Dock/Finder with the bridge environment:
+# LaunchServices applies LSEnvironment, while launch.sh exports the same values
+# for direct exec. Idempotent; backup first; Info.plist edits need a re-sign.
+PLIST="$APP/Contents/Info.plist"
+if [ -f "$PLIST" ] && ! /usr/libexec/PlistBuddy -c "Print :LSEnvironment" "$PLIST" >/dev/null 2>&1; then
+  mkdir -p "$STATE/backup"
+  [ -f "$STATE/backup/Info.plist.orig" ] || cp "$PLIST" "$STATE/backup/Info.plist.orig"
+  /usr/libexec/PlistBuddy -c "Add :LSEnvironment dict" "$PLIST"
+  /usr/libexec/PlistBuddy -c "Add :LSEnvironment:HONGGUO_DESKTOP_AUTH_BASE_URL string http://127.0.0.1:8787" "$PLIST"
+  /usr/libexec/PlistBuddy -c "Add :LSEnvironment:HONGGUO_DESKTOP_AUTH_CLIENT_ID string test-client" "$PLIST"
+  /usr/libexec/PlistBuddy -c "Add :LSEnvironment:HONGGUO_DESKTOP_PLAYBACK_PATH string /playback" "$PLIST"
+  /usr/libexec/PlistBuddy -c "Add :LSEnvironment:HG_SIGN_LIST string 1" "$PLIST"
+  codesign --force --deep --sign - "$APP" >/dev/null 2>&1 || true
+  echo "已注入 Dock 启动环境变量（LSEnvironment）。"
+fi
+# Installs that predate signed list requests lack this one key.
+if [ -f "$PLIST" ] && /usr/libexec/PlistBuddy -c "Print :LSEnvironment" "$PLIST" >/dev/null 2>&1 \
+   && ! /usr/libexec/PlistBuddy -c "Print :LSEnvironment:HG_SIGN_LIST" "$PLIST" >/dev/null 2>&1; then
+  /usr/libexec/PlistBuddy -c "Add :LSEnvironment:HG_SIGN_LIST string 1" "$PLIST"
+  codesign --force --deep --sign - "$APP" >/dev/null 2>&1 || true
+  echo "已补充 HG_SIGN_LIST=1（签名列表请求）。"
+fi
+
 rm -rf "$SEARCH_APP"
 mkdir -p "$SEARCH_APP/Contents/MacOS" "$SEARCH_APP/Contents/Resources"
 cp "$ROOT/bin/search-app/Info.plist" "$SEARCH_APP/Contents/Info.plist"
