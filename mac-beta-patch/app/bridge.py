@@ -490,6 +490,7 @@ def resolve_playback(params: dict) -> dict:
     vid = params.get("vid") or ""
     if not series_id and not vid:
         return {"error": "missing series_id"}
+    series_id = resolve_rank_index(str(series_id), str(episode))
     port, key = backend_endpoint()
     if not port:
         return {"error": "backend unavailable"}
@@ -661,7 +662,9 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(novelfm_payload(params))
         if path.startswith("/ab/rank/"):
             slug = path[len("/ab/rank/"):].split("/")[0]
-            return self.send_bytes(rank_page(slug), "text/html; charset=utf-8")
+            body = rank_page(slug)
+            record_rank_served(slug, body)
+            return self.send_bytes(body, "text/html; charset=utf-8")
         if path.startswith("/ab/detail"):
             return self.send_bytes(detail_page(params.get("series_id") or ""),
                                    "text/html; charset=utf-8")
@@ -961,6 +964,63 @@ def backend_get_retry(path_qs: str, timeout=40, attempts=2, delay=1.5):
 
 RANK_CACHE_DIR = STATE_DIR / "cache"
 RANK_TTL = 600  # seconds a cached rank page is served as-is before a refresh
+
+
+RANK_INDEX_RE = re.compile(r'href="/detail\?series_id=(\d+)"[^>]*aria-label="播放第 1 集 ([^"]*)"')
+RANK_SERVED = {"slug": "", "time": 0.0, "cards": []}
+RANK_SERVED_LOCK = threading.Lock()
+RANK_INDEX_STICKY = {"n": 0, "series": ""}
+
+
+def record_rank_served(slug: str, body: bytes):
+    """Remember the last rank page handed to the app, in card order.
+
+    The app's discover view addresses a card by its position: playback
+    requests carry series_id=<card index> (1, 2, 3...), while history-based
+    and auto-advance continuations carry real ids. Serving time and card
+    order are the context needed to translate the index back.
+    """
+    try:
+        cards = [(sid, html.unescape(title))
+                 for sid, title in RANK_INDEX_RE.findall(body.decode("utf-8", "replace"))]
+    except Exception:
+        cards = []
+    with RANK_SERVED_LOCK:
+        RANK_SERVED.update(slug=slug, time=time.time(), cards=cards)
+
+
+def resolve_rank_index(series_id: str, episode: str) -> str:
+    """Map an app-side card index to the real series id of that card.
+
+    A small number (real ids are 19 digits) means the app played card #N of
+    the discover list. Episode 1 is a fresh card press: resolve against the
+    latest served page. A higher episode is an auto-advance continuation:
+    keep the earlier mapping so a board refresh mid-session cannot switch
+    the series under the player.
+    """
+    if not series_id.isdigit() or len(series_id) > 10:
+        return series_id
+    n = int(series_id)
+    if not 1 <= n <= 200:
+        return series_id
+    with RANK_SERVED_LOCK:
+        cards = list(RANK_SERVED["cards"])
+        served_age = time.time() - RANK_SERVED["time"]
+    if not cards or served_age > 7200:
+        return series_id
+    try:
+        continuation = int(episode) > 1
+    except ValueError:
+        continuation = False
+    if continuation and RANK_INDEX_STICKY["n"] == n and RANK_INDEX_STICKY["series"]:
+        return RANK_INDEX_STICKY["series"]
+    if n <= len(cards):
+        sid, title = cards[n - 1]
+        RANK_INDEX_STICKY.update(n=n, series=sid)
+        print(f"[bridge] rank-index playback: card {n} -> series {sid} ({title})",
+              flush=True)
+        return sid
+    return series_id
 
 
 def board_items(board: str) -> list:

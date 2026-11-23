@@ -152,18 +152,50 @@ novelfm 响应模式调试开关、以及最终方案用不上的 TLS 监听（:
 - 从 `mac-v1.0.9-beta.2` DMG 复制一份干净 App，在 `--no-start` 模式下运行 `install.sh`：后端文件与 `third_party/phone-account-protocol` 复制正确，补丁模块可导入，`红果搜片.app` 生成并通过 ad-hoc 签名。
 - 本机实装验证：搜索、加载更多、网页播放、写入收藏、App 内 78 集播放与切集均通过（见上文）。
 
-## 未改动 / 已知限制
+## 11. 播放 SDK v5 移植（2026-11-24）
+
+上游 11 月中旬起拒绝旧版播放签名（`multi_video_model` 回 200 空 body），
+Windows 1.0.138 新增 SDK v5 签名栈应对。移植方式：
+
+- **原样移植**（与 1.0.138 逐字节一致，仅换行符）：`backend/
+  desktop_sdk_player_v5.py`、`desktop_codec_fallback.py`、
+  `desktop_codec_urls.py`、`desktop_range_reader.py` 和 12 个
+  `phone_*_v5.py` 协议模块。素材（`libmetasec_ml.so` 4.5MB +
+  配置）首次播放时从官方 APK CDN 按哈希校验下载，缓存到后端数据目录。
+- **平台胶水 `backend/desktop_v5_fallback.py`**：Windows DPAPI 在 macOS
+  上不存在，替换为 AES-GCM + 数据目录内 0600 密钥文件（同 DPAPI 的
+  「同用户可读」威胁模型）；`unicorn`（arm64 模拟器，跑原生签名库）或
+  `Crypto` 缺失时自动禁用，后端行为与移植前完全一致。
+- **接线**：`fresh_player.py` 在原匿名通道失败（且原因属
+  empty-response / invalid-model，与 1.0.138 的 SdkFallback 同门槛）时才
+  调 v5；v5 也拿不到则抛回原错误。v5 读取成功后模型沿用原有 5 小时缓存。
+- **install.sh**：向捆绑 Python 安装 `unicorn==2.1.4`（uv 优先，pip 兜
+  底；失败仅禁用 v5 并提示），安装结束统一重签 App。
+- 状态文件在后端数据目录：`playback-spare.dpapi`（匿名设备，一次性注册
+  带重试标记，遵循上游「不自动重放」语义）、`playback-sdk-v5.dpapi`（SDK
+  会话，2 次握手预算）、`playback-v5-diagnostic.json`（统计）。
+
+**App 发现页按卡片序号请求播放的问题**：实测 App 从发现页点开卡片后，
+播放请求带的是 `series_id=1/2/3...`（卡片在榜单中的位置），不是 href 里的
+真实 ID；历史/续播入口才发真实 ID。桥接新增 `record_rank_served()` /
+`resolve_rank_index()`：服务榜单页时记录卡片顺序，播放请求带小数字时映射
+回真实 ID（第 1 集重新解析，>1 集沿用上次映射，避免榜单刷新中途换剧）。
+服务超过 2 小时或映射失败则按原样透传。
+
+验证（2026-11-24 00:30–00:36）：临时副本从零跑通（注册→下载素材→2 次握
+手→取模型 5.9s）；装进 App 后：桥接 `/playback` 200（第 3/4 集）、直链
+Range 请求 206 返回真 MP4；**App 内实测**：重启自动续播 200、历史入口播放
+《闪婚，她甜的过头》第 1→2 集 200、流缓存新增剧集并在后台转码、v5 读取
+3 模型 0 失败；卡片索引 POST `{3,1}` 映射到《和离后…完结篇》第 1 集 200。
+
+## 12. 已知限制与遗留
 
 - App 内置搜索框仍然不可用（搜索客户端强制 https + 内置根证书，本地无法
   劫持；需要公网域名 + 证书中继才能打通，暂不做）。搜索请使用 红果搜片。
 - App 播放页的弹幕、评论等上游能力未逐一验证。
-- **播放当前不可用（2026-11-23 发现，上游变更）**：上游对
-  `multi_video_model` 播放接口返回 HTTP 200 + 空 body，App 的账号通道和
-  匿名备用通道（`desktop_fresh_playback`）都拿不到播放地址，最终报
-  `PLAY_FAILED / video_model`。已排除本地原因：与 11-23 的改动无关（失败点
-  不在改动的代码路径上）；IPv4/IPv6/代理三种网络路径结果一致；新注册的
-  匿名设备同样被拒。Windows 1.0.138 的解法是新增一套 SDK v5 签名栈
-  （`desktop_sdk_player_v5` + `phone_*_v5` 约 15 个模块，依赖 `unicorn`
-  模拟 arm64 原生签名库，状态文件用 Windows DPAPI 保护），Mac 后端里没有
-  这些依赖，尚未移植。最后成功播放是 11-10。
+- **播放 v5 移植（2026-11-24，上游变更后恢复播放）**：上游对
+  `multi_video_model` 播放接口返回 HTTP 200 + 空 body（账号通道和匿名
+  备用通道都拿不到地址，`PLAY_FAILED / video_model`；与 11-23 改动无关，
+  IPv4/IPv6/代理结果一致）。Windows 1.0.138 的解法是 SDK v5 签名栈，已按
+  「原样移植 + 平台胶水」方式落地，见第 11 节。
 - 依赖测试版内部文件布局；升级 App 后补丁可能需要更新。

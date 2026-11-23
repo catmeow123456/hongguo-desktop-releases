@@ -55,7 +55,16 @@ def install(client):
             if not videos:
                 raise
             from desktop_fresh_playback import fetch_batch
-            models = fetch_batch(videos)
+            try:
+                models = fetch_batch(videos)
+            except Exception as fallback_error:
+                # 2026-11-23: upstream returns an empty body for the old
+                # anonymous media route; SDK V5 (Windows 1.0.138 port) is the
+                # next reader. {} re-raises this error unchanged.
+                from desktop_v5_fallback import read_models
+                models = read_models(videos, fallback_error)
+                if not models:
+                    raise
             if single:
                 model = models.get(videos[0])
                 if model is None:

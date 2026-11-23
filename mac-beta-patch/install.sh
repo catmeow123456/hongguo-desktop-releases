@@ -68,6 +68,21 @@ if [ -d "$ROOT/third_party/phone-account-protocol" ] && [ ! -d "$BACKEND/phone-a
 fi
 echo "后端补丁已写入（原文件备份在 $BACKUP）"
 
+# The SDK V5 playback fallback (backend/desktop_v5_fallback.py) needs the
+# unicorn arm64 emulator in the bundled Python. A failed install only
+# disables that fallback; the backend keeps its previous behavior.
+BUNDLED_PY="$BACKEND/python/bin/python3"
+if [ -x "$BUNDLED_PY" ] && ! "$BUNDLED_PY" -c 'import unicorn' >/dev/null 2>&1; then
+  if command -v uv >/dev/null 2>&1 \
+     && uv pip install --quiet --python "$BUNDLED_PY" 'unicorn==2.1.4' >/dev/null 2>&1; then
+    echo "已安装 unicorn（播放 v5 通道）。"
+  elif "$BUNDLED_PY" -m pip install --quiet --disable-pip-version-check --no-deps 'unicorn==2.1.4' >/dev/null 2>&1; then
+    echo "已安装 unicorn（播放 v5 通道，pip）。"
+  else
+    echo "unicorn 安装失败：播放 v5 通道未启用（后端照旧运行）。" >&2
+  fi
+fi
+
 # Patch the app binary so 发现片单 / detail enrichment fetches land on the
 # bridge's emulated pages (see bin/patch_urls.py).  Idempotent, backs up first.
 if python3 "$ROOT/bin/patch_urls.py" "$LAUNCHER" "$STATE/backup"; then
@@ -109,6 +124,10 @@ if [ -f "$APP/Contents/Resources/icon.icns" ]; then
 fi
 codesign --force --deep --sign - "$SEARCH_APP" >/dev/null 2>&1 || true
 echo "已创建 $SEARCH_APP"
+
+# Refresh the ad-hoc signature so `codesign --verify --deep` stays clean after
+# backend .py / bundled-python changes (idempotent, adds ~1 min).
+codesign --force --deep --sign - "$APP" >/dev/null 2>&1 || true
 
 if [ "$NO_START" -eq 0 ]; then
   # Supervise the bridge with launchd (user agent, no sudo): KeepAlive restarts
